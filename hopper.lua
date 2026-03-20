@@ -303,12 +303,6 @@ local function run_hopper()
     log("=== Hopper Stopped ===")
     show_status(cur_ps, #ps_list, crash_count, 0, 0, "STOPPED")
     print("")
-    local rst = ask("Force stop Roblox? (y/n)")
-    if rst == "y" and PKG ~= "" then
-        su_exec("am force-stop " .. PKG)
-        print("[+] Roblox ditutup.")
-        sleep(1)
-    end
 end
 
 -- ============================================
