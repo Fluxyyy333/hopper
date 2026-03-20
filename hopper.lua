@@ -90,16 +90,22 @@ end
 local function inject_cookie()
     local cookie = read_file(COOKIE_FILE)
     if cookie == "" or PKG == "" then return end
-    local dir  = "/data/data/" .. PKG .. "/shared_prefs"
-    local file = dir .. "/RobloxSharedPreferences.xml"
+    local dir    = "/data/data/" .. PKG .. "/shared_prefs"
+    local target = dir .. "/RobloxSharedPreferences.xml"
+    local tmp    = "/sdcard/.hcookie_tmp.xml"
+    -- Tulis XML ke /sdcard dulu (tidak butuh root)
+    local f = io.open(tmp, "w")
+    if not f then log("inject_cookie: gagal buat tmp"); return end
+    f:write("<?xml version='1.0' encoding='utf-8' standalone='yes' ?>\n")
+    f:write("<map>\n")
+    f:write('    <string name=".ROBLOSECURITY">' .. cookie .. "</string>\n")
+    f:write("</map>\n")
+    f:close()
+    -- Copy ke data dir via su
     su_exec("mkdir -p '" .. dir .. "'")
-    local xml = "<?xml version='1.0' encoding='utf-8' standalone='yes' ?>"
-        .. "<map>"
-        .. '<string name=".ROBLOSECURITY">' .. cookie .. "</string>"
-        .. "</map>"
-    xml = xml:gsub("'","'\\''")
-    su_exec("echo '" .. xml .. "' > '" .. file .. "'")
-    su_exec("chmod 660 '" .. file .. "'")
+    su_exec("cp '" .. tmp .. "' '" .. target .. "'")
+    su_exec("chmod 660 '" .. target .. "'")
+    os.remove(tmp)
     log("Cookie injected")
 end
 
