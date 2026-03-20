@@ -88,6 +88,7 @@ local function inject_cookie(pkg, cookie)
 end
 
 
+local function save_pkg(pkg)
     local f = io.open(PKG_FILE, "w")
     if f then f:write(pkg); f:close() end
 end
@@ -99,7 +100,7 @@ local function load_pkg()
     return p:gsub("%c",""):gsub("^%s+",""):gsub("%s+$","")
 end
 
-
+local function is_running()
     local h = io.popen("su -c 'pidof " .. PKG .. "' 2>/dev/null")
     if not h then return false end
     local r = h:read("*a") or ""; h:close()
