@@ -18,6 +18,9 @@ local RONIX_AE_SCRIPT = [[loadstring(game:HttpGet("https://raw.githubusercontent
 getgenv().scriptkey="HsMgJbFoUwmvfzGxLESxMiUFuYpyqfFA"
 loadstring(game:HttpGet("https://zekehub.com/scripts/AdoptMe/Utility.lua"))()]]
 
+local RONIX_TRACK_PATH   = RONIX_AE_DIR .. "Trackstat.lua"
+local RONIX_TRACK_SCRIPT = '_G.Config={UserID="37825915-c3be-41bc-987f-661da09d9b3c",discord_id="757533465213141053",Note="Pc"}local s;for i=1,5 do s=pcall(function()loadstring(game:HttpGet("https://cdn.yummydata.click/scripts/adoptmee"))()end)if s then break end wait(5)end'
+
 local PKG     = ""
 local HOP_MIN = 0
 
@@ -141,13 +144,25 @@ local function inject_autoexec()
     log("Autoexec injected")
 end
 
+local function inject_trackstat()
+    su_exec("mkdir -p '" .. RONIX_AE_DIR .. "'")
+    local f = io.open(RONIX_TRACK_PATH, "w")
+    if f then f:write(RONIX_TRACK_SCRIPT); f:close() end
+    log("Trackstat injected")
+end
+
+-- Inject semua — hanya dipanggil sekali saat start
+local function inject_all()
+    inject_cookie()
+    inject_key()
+    inject_autoexec()
+    inject_trackstat()
+end
+
 local function launch(ps_link, ps_idx, ps_total)
     log(string.format("Launching PS %d/%d", ps_idx, ps_total))
     su_exec("am force-stop " .. PKG)
     sleep(2)
-    inject_cookie()
-    inject_key()
-    inject_autoexec()
     local dp = ps_link:match("^intent://(.-)#Intent")
            or ps_link:gsub("^https?://","")
     local intent = "intent://" .. dp
@@ -215,6 +230,10 @@ local function run_hopper()
     local hop_sec     = HOP_MIN * 60
     local start_time  = os.time()
     local hop_time    = os.time()
+
+    -- Inject semua sekali di awal
+    log("Injecting...")
+    inject_all()
 
     -- Launch pertama
     launch(ps_list[ptr], ptr, #ps_list)
