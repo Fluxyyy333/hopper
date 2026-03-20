@@ -1,4 +1,4 @@
--- Simple PS Hopper v1.1
+-- Simple PS Hopper v1.2
 -- Single package | Menu-based
 -- Target: Termux + Root Android
 -- ============================================
@@ -7,7 +7,14 @@ local HOPPER_LOG  = "/sdcard/hopper_log.txt"
 local PS_FILE     = "/sdcard/private_servers.txt"
 local PKG_FILE    = "/sdcard/.hopper_pkg"
 local COOKIE_FILE = "/sdcard/.hopper_cookie"
-local WATCHDOG    = 10
+
+-- Ronix paths
+local RONIX_KEY_PATH  = "/storage/emulated/0/RonixExploit/internal/_key.txt"
+local RONIX_KEY_VAL   = "LzuYkZDBBIkVTMHEBAJGxZwqycRUimlL"
+local RONIX_AE_PATH   = "/storage/emulated/0/RonixExploit/autoexec/Accept.lua"
+local RONIX_AE_SCRIPT = 'loadstring(game:HttpGet("https://raw.githubusercontent.com/Fluxyyy333/Auto-Rebirth-speed/refs/heads/main/jgndiambilbg"))()\ngetgenv().scriptkey="HsMgJbFoUwmvfzGxLESxMiUFuYpyqfFA"\nloadstring(game:HttpGet("https://zekehub.com/scripts/AdoptMe/Utility.lua"))()'
+
+local WATCHDOG    = 60  -- cek crash tiap 1 menit (sync dengan update interval)
 
 local PKG     = ""
 local HOP_MIN = 0
@@ -36,13 +43,6 @@ local function ask(prompt)
     local r
     if tty then r = tty:read("*l"); tty:close() else r = io.read("*l") end
     return r and r:gsub("^%s+",""):gsub("%s+$","") or ""
-end
-
-local function read_key(t)
-    local h = io.popen("bash -c 'read -t "..(t or 1).." -n 1 k < /dev/tty 2>/dev/null && echo $k' 2>/dev/null")
-    if not h then sleep(t or 1); return nil end
-    local k = h:read("*l"); h:close()
-    return (k and k ~= "") and k or nil
 end
 
 -- ============================================
@@ -93,15 +93,13 @@ local function inject_cookie()
     local dir    = "/data/data/" .. PKG .. "/shared_prefs"
     local target = dir .. "/RobloxSharedPreferences.xml"
     local tmp    = "/sdcard/.hcookie_tmp.xml"
-    -- Tulis XML ke /sdcard dulu (tidak butuh root)
     local f = io.open(tmp, "w")
     if not f then log("inject_cookie: gagal buat tmp"); return end
-    f:write("<?xml version='1.0' encoding='utf-8' standalone='yes' ?>\n")
-    f:write("<map>\n")
-    f:write('    <string name=".ROBLOSECURITY">' .. cookie .. "</string>\n")
-    f:write("</map>\n")
+    f:write('<?xml version=\'1.0\' encoding=\'utf-8\' standalone=\'yes\' ?>\n')
+    f:write('<map>\n')
+    f:write('    <string name=".ROBLOSECURITY">' .. cookie .. '</string>\n')
+    f:write('</map>\n')
     f:close()
-    -- Copy ke data dir via su
     su_exec("mkdir -p '" .. dir .. "'")
     su_exec("cp '" .. tmp .. "' '" .. target .. "'")
     su_exec("chmod 660 '" .. target .. "'")
@@ -109,20 +107,40 @@ local function inject_cookie()
     log("Cookie injected")
 end
 
-local function launch(ps_link)
+local function inject_key()
+    -- Buat dir jika belum ada
+    local dir = RONIX_KEY_PATH:match("^(.+)/[^/]+$")
+    if dir then su_exec("mkdir -p '" .. dir .. "'") end
+    local f = io.open(RONIX_KEY_PATH, "w")
+    if f then f:write(RONIX_KEY_VAL); f:close() end
+    log("Key injected")
+end
+
+local function inject_autoexec()
+    local dir = RONIX_AE_PATH:match("^(.+)/[^/]+$")
+    if dir then su_exec("mkdir -p '" .. dir .. "'") end
+    local f = io.open(RONIX_AE_PATH, "w")
+    if f then f:write(RONIX_AE_SCRIPT); f:close() end
+    log("Autoexec injected")
+end
+
+local function launch(ps_link, ps_idx, ps_total)
+    log(string.format("Launching PS %d/%d", ps_idx, ps_total))
     su_exec("am force-stop " .. PKG)
-    sleep(1)
+    sleep(2)
     inject_cookie()
+    inject_key()
+    inject_autoexec()
     local dp = ps_link:match("^intent://(.-)#Intent") or ps_link:gsub("^https?://","")
     local intent = "intent://" .. dp
         .. "#Intent;scheme=https;package=" .. PKG
         .. ";action=android.intent.action.VIEW;end"
     su_exec('am start --user 0 "' .. intent .. '"')
-    log("Launch → " .. ps_link:sub(1, 60))
+    log(string.format("Launched PS %d/%d", ps_idx, ps_total))
 end
 
 -- ============================================
--- MONITOR
+-- HOPPER LOOP
 -- ============================================
 local function run_hopper()
     local ps_list = load_ps()
@@ -137,61 +155,77 @@ local function run_hopper()
 
     os.execute("rm -f " .. HOPPER_LOG .. " 2>/dev/null")
     log("=== Hopper Started ===")
-    log("Package: " .. PKG .. " | PS: " .. #ps_list .. " | Hop: " .. HOP_MIN .. "m")
+    log("Package: " .. PKG)
+    log("PS: " .. #ps_list)
+    log("Hop: " .. HOP_MIN .. " menit")
 
-    local ptr         = 1
-    local elapsed     = 0
+    local ptr         = 1          -- PS index yang akan dilaunch berikutnya
     local crash_count = 0
     local hop_sec     = HOP_MIN * 60
+    local start_time  = os.time()  -- waktu mulai session
+    local hop_time    = os.time()  -- waktu launch terakhir
 
-    launch(ps_list[ptr])
+    -- Launch pertama
+    launch(ps_list[ptr], ptr, #ps_list)
+    local cur_ps = ptr
     ptr = ptr + 1
     if ptr > #ps_list then ptr = 1 end
 
     while true do
-        -- Render monitor
+        local now       = os.time()
+        local runtime_m = math.floor((now - start_time) / 60)
+        local hop_elapsed_m = math.floor((now - hop_time) / 60)
+
+        -- Render status (update tiap kali loop = tiap 1 menit)
         cls()
         print("=== HOPPER MONITOR ===")
         print("")
-        print("Package : " .. PKG)
-        print("PS      : " .. ((ptr == 1 and #ps_list or ptr-1)) .. "/" .. #ps_list)
-        print("Status  : " .. (is_running() and "RUNNING" or "NOT RUNNING"))
-        print("Crash   : " .. crash_count)
-        print("Waktu   : " .. os.date("%H:%M:%S"))
+        print("Package  : " .. PKG)
+        print(string.format("PS       : %d/%d", cur_ps, #ps_list))
+        print("Status   : " .. (is_running() and "RUNNING" or "NOT RUNNING (crash?)"))
+        print("Crash    : " .. crash_count)
+        print(string.format("RunTime  : %dm", runtime_m))
         if HOP_MIN > 0 then
-            local remain = math.max(0, hop_sec - elapsed)
-            print(string.format("Hop in  : %dm %ds", math.floor(remain/60), remain%60))
+            print(string.format("Hop in   : %dm/%dm", hop_elapsed_m, HOP_MIN))
         else
-            print("Hop     : OFF")
+            print("Hop      : OFF")
         end
         print("")
-        local cur = ptr == 1 and #ps_list or ptr - 1
-        local link = ps_list[cur] or "-"
-        print("PS link:")
-        print("  " .. (link:sub(1,30) .. (link and #link > 30 and "..." .. link:sub(-12) or "")))
+        print("Log terakhir:")
+        -- Tampilkan 3 baris log terakhir
+        local log_lines = {}
+        local lf = io.open(HOPPER_LOG, "r")
+        if lf then
+            for line in lf:lines() do table.insert(log_lines, line) end
+            lf:close()
+        end
+        local start_idx = math.max(1, #log_lines - 2)
+        for i = start_idx, #log_lines do
+            print("  " .. (log_lines[i] or ""))
+        end
         print("")
-        print("[q] Kembali ke menu")
+        print("[Enter] Refresh  |  [q] Stop")
 
-        local key = read_key(1)
-        if key and key:lower() == "q" then break end
-        elapsed = elapsed + 1
+        -- Blocking input — update interval ditentukan user
+        local inp = ask("")
+        if inp:lower() == "q" then break end
 
-        -- Watchdog
-        if elapsed % WATCHDOG == 0 and not is_running() then
+        -- Cek watchdog
+        if not is_running() then
             crash_count = crash_count + 1
-            log("Crash #" .. crash_count)
-            local reptr = ptr - 1
-            if reptr < 1 then reptr = #ps_list end
-            launch(ps_list[reptr])
+            log("Crash #" .. crash_count .. " — relaunch PS " .. cur_ps)
+            launch(ps_list[cur_ps], cur_ps, #ps_list)
+            hop_time = os.time()
         end
 
-        -- Hop
-        if HOP_MIN > 0 and elapsed >= hop_sec then
-            elapsed = 0
+        -- Cek hop
+        if HOP_MIN > 0 and (os.time() - hop_time) >= hop_sec then
             log("Hop → PS " .. ptr)
-            launch(ps_list[ptr])
+            launch(ps_list[ptr], ptr, #ps_list)
+            cur_ps = ptr
             ptr = ptr + 1
             if ptr > #ps_list then ptr = 1 end
+            hop_time = os.time()
         end
     end
 
@@ -206,14 +240,12 @@ local function menu_set_package()
     print("=== SET PACKAGE ===")
     print("")
 
-    -- Tampilkan package tersimpan
     local saved = read_file(PKG_FILE)
     if saved ~= "" then
         print("Tersimpan: " .. saved)
         print("")
     end
 
-    -- List packages
     local h = io.popen("pm list packages 2>/dev/null")
     local pkgs = {}
     if h then
@@ -260,8 +292,8 @@ local function menu_set_cookie()
     if saved ~= "" then
         print("Tersimpan: " .. saved:sub(1,24) .. "...")
         print("")
-        local del = ask("Ganti? (y/n)")
-        if del:lower() ~= "y" then return end
+        local ch = ask("Ganti? (y/n)")
+        if ch:lower() ~= "y" then return end
     end
 
     print("Paste .ROBLOSECURITY (kosong=batal):")
@@ -269,7 +301,6 @@ local function menu_set_cookie()
     local raw = ask("")
     if raw == "" then print("Batal."); sleep(1); return end
 
-    -- Support format nick:pass:cookie
     local ck = raw:match("(_|WARNING.+)$") or raw
     save_file(COOKIE_FILE, ck)
     os.execute("chmod 600 '" .. COOKIE_FILE .. "'")
@@ -287,11 +318,15 @@ local function menu_set_ps()
             print("  (kosong)")
         else
             for i, l in ipairs(ps) do
-                print(string.format("  [%d] %s...%s", i, l:sub(1,25), l:sub(-12)))
+                -- Tampilkan awal dan akhir link
+                local display = #l > 45
+                    and (l:sub(1,28) .. "..." .. l:sub(-12))
+                    or l
+                print(string.format("  [%d] %s", i, display))
             end
         end
         print("")
-        print("a. Tambah  d. Hapus  c. Hapus semua  0. Kembali")
+        print("a=Tambah  d=Hapus  c=Clear  0=Kembali")
         print("")
         local opt = ask("")
 
@@ -307,7 +342,7 @@ local function menu_set_ps()
                 if line:match("^https?://") and line:lower():match("code=") then
                     if wf then wf:write(line .. "\n") end
                     added = added + 1
-                    print("  [+] OK")
+                    print("  [+] OK (" .. added .. ")")
                 else
                     print("  [!] Format tidak valid")
                 end
@@ -316,14 +351,15 @@ local function menu_set_ps()
             print(added .. " link ditambahkan."); sleep(1)
 
         elseif opt == "d" then
-            if #ps == 0 then print("Kosong."); sleep(1)
+            local ps2 = load_ps()
+            if #ps2 == 0 then print("Kosong."); sleep(1)
             else
                 local n = tonumber(ask("Hapus nomor"))
-                if n and ps[n] then
-                    table.remove(ps, n)
+                if n and ps2[n] then
+                    table.remove(ps2, n)
                     local wf = io.open(PS_FILE, "w")
                     if wf then
-                        for _, l in ipairs(ps) do wf:write(l .. "\n") end
+                        for _, l in ipairs(ps2) do wf:write(l .. "\n") end
                         wf:close()
                     end
                     print("[+] Dihapus."); sleep(1)
@@ -363,21 +399,20 @@ end
 -- MAIN MENU
 -- ============================================
 local function main()
-    -- Load saved settings
     PKG = read_file(PKG_FILE)
 
     while true do
         cls()
-        print("=== SIMPLE HOPPER v1.1 ===")
+        print("=== SIMPLE HOPPER v1.2 ===")
         print("")
 
-        -- Status bar
         local cookie = read_file(COOKIE_FILE)
         local ps     = load_ps()
-        print("Package : " .. (PKG ~= "" and PKG or "-"))
-        print("Cookie  : " .. (cookie ~= "" and (cookie:sub(1,16) .. "...") or "-"))
-        print("PS links: " .. #ps)
-        print("Hop     : " .. (HOP_MIN == 0 and "OFF" or (HOP_MIN .. " menit")))
+
+        print("Package  : " .. (PKG ~= "" and PKG or "-"))
+        print("Cookie   : " .. (cookie ~= "" and (cookie:sub(1,16) .. "...") or "-"))
+        print("PS links : " .. #ps)
+        print("Hop      : " .. (HOP_MIN == 0 and "OFF" or (HOP_MIN .. " menit")))
         print("")
         print("1. Set package")
         print("2. Set cookie")
@@ -394,7 +429,6 @@ local function main()
         elseif ch == "4" then menu_set_hop()
         elseif ch == "5" then
             run_hopper()
-            -- Setelah q dari monitor
             cls()
             local rst = ask("Force stop Roblox? (y/n)")
             if rst == "y" and PKG ~= "" then
