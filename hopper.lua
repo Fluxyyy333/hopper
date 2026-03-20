@@ -125,9 +125,17 @@ local function inject_cookie()
     f:close()
     su_exec("mkdir -p '" .. dir .. "'")
     su_exec("cp '" .. tmp .. "' '" .. target .. "'")
+    -- Ambil UID app lalu chown — ini kunci agar Roblox mau baca filenya
+    local uid_h = io.popen("su -c 'stat -c %u /data/data/" .. PKG .. "' 2>/dev/null")
+    local uid = uid_h and uid_h:read("*l") or ""
+    if uid_h then uid_h:close() end
+    uid = uid:gsub("%c",""):gsub("%s","")
+    if uid ~= "" then
+        su_exec("chown " .. uid .. ":" .. uid .. " '" .. target .. "'")
+    end
     su_exec("chmod 660 '" .. target .. "'")
     os.remove(tmp)
-    log("Cookie injected")
+    log("Cookie injected (uid=" .. uid .. ")")
 end
 
 local function inject_key()
@@ -199,9 +207,7 @@ local function show_status(cur_ps, ps_total, crash_count,
     end
     print("")
     print("========================")
-    print("Untuk STOP:")
-    print("  Buka Termux baru, ketik:")
-    print("  touch /sdcard/.hopper_stop")
+    print("Ketik [q] + Enter untuk STOP")
     print("========================")
 end
 
@@ -241,15 +247,21 @@ local function run_hopper()
     ptr = ptr + 1
     if ptr > #ps_list then ptr = 1 end
 
-    -- Loop: tidur 60 detik, lalu cek kondisi
+    -- Loop: tiap 5 detik cek input 'q' atau kondisi hop/crash
     while true do
-        -- Tidur 60 detik sambil cek stop file tiap 5 detik
-        for _ = 1, 12 do
-            sleep(5)
-            if file_exists(STOP_FILE) then
-                log("Stop file detected")
-                goto hopper_stop
-            end
+        -- read -t 5: tunggu input 5 detik, kalau ada 'q' langsung stop
+        local h = io.popen("bash -c 'read -t 5 -r line < /dev/tty 2>/dev/null; echo \"$line\"' 2>/dev/null")
+        local inp = ""
+        if h then inp = h:read("*l") or ""; h:close() end
+        inp = inp:gsub("%c",""):gsub("^%s+",""):gsub("%s+$","")
+
+        if inp:lower() == "q" then
+            log("User stop")
+            goto hopper_stop
+        end
+        if file_exists(STOP_FILE) then
+            log("Stop file detected")
+            goto hopper_stop
         end
 
         local now           = os.time()
@@ -278,9 +290,12 @@ local function run_hopper()
             hop_elapsed_m = 0
         end
 
-        -- Update display
-        show_status(cur_ps, #ps_list, crash_count,
-                    runtime_m, hop_elapsed_m, status_str)
+        -- Update display tiap ~60 detik (12 x 5s)
+        local tick = math.floor((now - start_time) % 60)
+        if tick < 5 then
+            show_status(cur_ps, #ps_list, crash_count,
+                        runtime_m, hop_elapsed_m, status_str)
+        end
     end
 
     ::hopper_stop::
