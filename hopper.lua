@@ -1,17 +1,13 @@
--- Simple PS Hopper v1.4
+-- Simple PS Hopper v1.3
 -- Single package | Menu-based | sleep-based loop
 -- Target: Termux + Root Android
--- Cookie inject: SQLite WebView Default/Cookies
 -- ============================================
 
 local HOPPER_LOG  = "/sdcard/hopper_log.txt"
-local PS_FILE     = os.getenv("HOME") .. "/private_servers.txt"
-local PKG_FILE    = os.getenv("HOME") .. "/.hopper_pkg"
-local COOKIE_FILE = os.getenv("HOME") .. "/.hopper_cookie"
-local STOP_FILE   = os.getenv("HOME") .. "/.hopper_stop"
-local INJECT_SH   = "/sdcard/.hopper_inject.sh"
-
-local SQLITE3 = "/data/data/com.termux/files/usr/bin/sqlite3"
+local PS_FILE     = "/sdcard/private_servers.txt"
+local PKG_FILE    = "/sdcard/.hopper_pkg"
+local COOKIE_FILE = "/sdcard/.hopper_cookie"
+local STOP_FILE   = "/sdcard/.hopper_stop"
 
 local RONIX_KEY_DIR  = "/storage/emulated/0/RonixExploit/internal/"
 local RONIX_KEY_PATH = RONIX_KEY_DIR .. "_key.txt"
@@ -36,7 +32,7 @@ local function sleep(s)
 end
 
 local function su_exec(cmd)
-    os.execute("su -c '" .. cmd:gsub("'", "'\\''") .. "' >/dev/null 2>&1")
+    os.execute("su -c '" .. cmd:gsub("'","'\\''") .. "' >/dev/null 2>&1")
 end
 
 local function log(msg)
@@ -54,7 +50,7 @@ local function ask(prompt)
     local r
     if tty then r = tty:read("*l"); tty:close()
     else r = io.read("*l") end
-    return r and r:gsub("^%s+", ""):gsub("%s+$", "") or ""
+    return r and r:gsub("^%s+",""):gsub("%s+$","") or ""
 end
 
 local function file_exists(path)
@@ -72,7 +68,7 @@ local function read_file(path)
     local f = io.open(path, "r")
     if not f then return "" end
     local c = f:read("*a") or ""; f:close()
-    return c:gsub("^%s+", ""):gsub("%s+$", "")
+    return c:gsub("%c",""):gsub("^%s+",""):gsub("%s+$","")
 end
 
 local function load_ps()
@@ -80,7 +76,7 @@ local function load_ps()
     if not f then return {} end
     local list = {}
     for line in f:lines() do
-        local l = line:gsub("%c", ""):gsub("^%s+", ""):gsub("%s+$", "")
+        local l = line:gsub("%c",""):gsub("^%s+",""):gsub("%s+$","")
         if l ~= "" and not l:match("^#")
             and l:match("^https?://")
             and l:lower():match("code=") then
@@ -114,64 +110,32 @@ local function is_running()
     return r:match("%d+") ~= nil
 end
 
--- ============================================
--- INJECT COOKIE — SQLite WebView
--- ============================================
 local function inject_cookie()
     local cookie = read_file(COOKIE_FILE)
-    if cookie == "" or PKG == "" then
-        log("inject_cookie: skip (cookie atau PKG kosong)")
-        return
-    end
-
-    local db = "/data/data/" .. PKG .. "/app_webview/Default/Cookies"
-
-    -- Tulis cookie ke file sementara supaya tidak ada masalah quoting
-    local ck_tmp = "/sdcard/.hopper_ck_tmp"
-    local fc = io.open(ck_tmp, "w")
-    if not fc then log("ERR: gagal tulis cookie tmp"); return end
-    fc:write(cookie)
-    fc:close()
-
-    -- Buat shell script inject
-    local f = io.open(INJECT_SH, "w")
-    if not f then log("ERR: gagal tulis inject.sh"); return end
-    f:write("#!/bin/sh\n")
-    f:write("SQ='" .. SQLITE3 .. "'\n")
-    f:write("DB='" .. db .. "'\n")
-    f:write("COOKIE=$(cat '" .. ck_tmp .. "')\n")
-    f:write("NOW=$(date +%s)\n")
-    f:write("CHROME_NOW=$(( (NOW + 11644473600) * 1000000 ))\n")
-    f:write("EXPIRE=$(( (NOW + 86400 * 365 + 11644473600) * 1000000 ))\n")
-    f:write("$SQ \"$DB\" \"INSERT OR REPLACE INTO cookies (\n")
-    f:write("  creation_utc, top_frame_site_key, host_key, name, value,\n")
-    f:write("  encrypted_value, path, expires_utc, is_secure, is_httponly,\n")
-    f:write("  last_access_utc, has_expires, is_persistent, priority,\n")
-    f:write("  samesite, source_scheme, source_port, is_same_party\n")
-    f:write(") VALUES (\n")
-    f:write("  $CHROME_NOW, '', '.roblox.com', '.ROBLOSECURITY', '$COOKIE',\n")
-    f:write("  '', '/', $EXPIRE, 1, 1,\n")
-    f:write("  $CHROME_NOW, 1, 1, 1, -1, 1, 443, 0\n")
-    f:write(");\"\n")
-    -- Verifikasi
-    f:write("RESULT=$($SQ \"$DB\" \"SELECT substr(value,1,20) FROM cookies WHERE name='.ROBLOSECURITY';\")\n")
-    f:write("echo \"INJECT_RESULT:$RESULT\"\n")
+    if cookie == "" or PKG == "" then return end
+    local dir    = "/data/data/" .. PKG .. "/shared_prefs"
+    local target = dir .. "/RobloxSharedPreferences.xml"
+    local tmp    = "/sdcard/.hcookie_tmp.xml"
+    local f = io.open(tmp, "w")
+    if not f then log("ERR: gagal tulis cookie tmp"); return end
+    f:write("<?xml version='1.0' encoding='utf-8' standalone='yes' ?>\n")
+    f:write("<map>\n")
+    f:write('    <string name=".ROBLOSECURITY">' .. cookie .. "</string>\n")
+    f:write("</map>\n")
     f:close()
-
-    -- Jalankan via su
-    local h = io.popen("su -c 'sh " .. INJECT_SH .. "' 2>&1")
-    local result = h and h:read("*a") or ""
-    if h then h:close() end
-
-    -- Bersihkan
-    os.remove(INJECT_SH)
-    os.remove(ck_tmp)
-
-    if result:match("INJECT_RESULT:_|WARNING") then
-        log("Cookie injected OK via SQLite")
-    else
-        log("ERR inject cookie: " .. result:sub(1, 60))
+    su_exec("mkdir -p '" .. dir .. "'")
+    su_exec("cp '" .. tmp .. "' '" .. target .. "'")
+    -- Ambil UID app lalu chown — ini kunci agar Roblox mau baca filenya
+    local uid_h = io.popen("su -c 'stat -c %u /data/data/" .. PKG .. "' 2>/dev/null")
+    local uid = uid_h and uid_h:read("*l") or ""
+    if uid_h then uid_h:close() end
+    uid = uid:gsub("%c",""):gsub("%s","")
+    if uid ~= "" then
+        su_exec("chown " .. uid .. ":" .. uid .. " '" .. target .. "'")
     end
+    su_exec("chmod 660 '" .. target .. "'")
+    os.remove(tmp)
+    log("Cookie injected (uid=" .. uid .. ")")
 end
 
 local function inject_key()
@@ -195,7 +159,7 @@ local function inject_trackstat()
     log("Trackstat injected")
 end
 
--- Inject semua — dipanggil sekali saat start
+-- Inject semua — hanya dipanggil sekali saat start
 local function inject_all()
     inject_cookie()
     inject_key()
@@ -205,22 +169,14 @@ end
 
 local function launch(ps_link, ps_idx, ps_total)
     log(string.format("Launching PS %d/%d", ps_idx, ps_total))
-
-    -- Force stop dulu
     su_exec("am force-stop " .. PKG)
     sleep(2)
-
-    -- Inject cookie SETELAH force-stop
-    inject_cookie()
-    sleep(1)
-
-    -- Build intent dari PS link
-    local dp = ps_link:match("^intent://(.-)#Intent") or ps_link:gsub("^https?://", "")
+    local dp = ps_link:match("^intent://(.-)#Intent")
+           or ps_link:gsub("^https?://","")
     local intent = "intent://" .. dp
         .. "#Intent;scheme=https;package=" .. PKG
         .. ";action=android.intent.action.VIEW;end"
     su_exec('am start --user 0 "' .. intent .. '"')
-
     log(string.format("Launched PS %d/%d", ps_idx, ps_total))
 end
 
@@ -231,7 +187,7 @@ local function show_status(cur_ps, ps_total, crash_count,
                             runtime_m, hop_elapsed_m, status_str)
     cls()
     print("========================")
-    print("   HOPPER MONITOR v1.4  ")
+    print("   HOPPER MONITOR v1.3  ")
     print("========================")
     print("")
     print("Pkg    : " .. PKG)
@@ -267,10 +223,11 @@ local function run_hopper()
         print("[!] Package belum diset!"); sleep(2); return
     end
 
+    -- Bersihkan stop file lama
     os.remove(STOP_FILE)
     os.execute("rm -f " .. HOPPER_LOG .. " 2>/dev/null")
 
-    log("=== Hopper Started v1.4 ===")
+    log("=== Hopper Started ===")
     log("Pkg: " .. PKG .. " | PS: " .. #ps_list .. " | Hop: " .. HOP_MIN .. "m")
 
     local ptr         = 1
@@ -280,23 +237,23 @@ local function run_hopper()
     local start_time  = os.time()
     local hop_time    = os.time()
 
-    -- Inject key + autoexec sekali di awal
-    log("Injecting key & autoexec...")
-    inject_key()
-    inject_autoexec()
-    inject_trackstat()
+    -- Inject semua sekali di awal
+    log("Injecting...")
+    inject_all()
 
-    -- Launch pertama (termasuk inject cookie)
+    -- Launch pertama
     launch(ps_list[ptr], ptr, #ps_list)
     cur_ps = ptr
     ptr = ptr + 1
     if ptr > #ps_list then ptr = 1 end
 
+    -- Loop: tiap 5 detik cek input 'q' atau kondisi hop/crash
     while true do
+        -- read -t 5: tunggu input 5 detik, kalau ada 'q' langsung stop
         local h = io.popen("bash -c 'read -t 5 -r line < /dev/tty 2>/dev/null; echo \"$line\"' 2>/dev/null")
         local inp = ""
         if h then inp = h:read("*l") or ""; h:close() end
-        inp = inp:gsub("%c", ""):gsub("^%s+", ""):gsub("%s+$", "")
+        inp = inp:gsub("%c",""):gsub("^%s+",""):gsub("%s+$","")
 
         if inp:lower() == "q" then
             log("User stop")
@@ -333,7 +290,7 @@ local function run_hopper()
             hop_elapsed_m = 0
         end
 
-        -- Update display tiap ~60 detik
+        -- Update display tiap ~60 detik (12 x 5s)
         local tick = math.floor((now - start_time) % 60)
         if tick < 5 then
             show_status(cur_ps, #ps_list, crash_count,
@@ -365,7 +322,7 @@ local function menu_set_package()
         for line in r:gmatch("[^\r\n]+") do
             local p = line:match("package:(.+)")
             if p then
-                p = p:gsub("%c", ""):gsub("^%s+", ""):gsub("%s+$", "")
+                p = p:gsub("%c",""):gsub("^%s+",""):gsub("%s+$","")
                 if p ~= "" then table.insert(pkgs, p) end
             end
         end
@@ -400,7 +357,7 @@ local function menu_set_cookie()
     print("")
     local saved = read_file(COOKIE_FILE)
     if saved ~= "" then
-        print("Tersimpan: " .. saved:sub(1, 20) .. "...")
+        print("Tersimpan: " .. saved:sub(1,20) .. "...")
         print("")
         local ch = ask("Ganti? (y/n)")
         if ch:lower() ~= "y" then return end
@@ -427,7 +384,7 @@ local function menu_set_ps()
         else
             for i, l in ipairs(ps) do
                 local d = #l > 42
-                    and (l:sub(1, 25) .. "..." .. l:sub(-12))
+                    and (l:sub(1,25) .. "..." .. l:sub(-12))
                     or l
                 print(string.format("  [%d] %s", i, d))
             end
@@ -465,7 +422,7 @@ local function menu_set_ps()
                     table.remove(ps2, n)
                     local wf = io.open(PS_FILE, "w")
                     if wf then
-                        for _, l in ipairs(ps2) do wf:write(l .. "\n") end
+                        for _, l in ipairs(ps2) do wf:write(l.."\n") end
                         wf:close()
                     end
                     print("[+] Dihapus."); sleep(1)
@@ -498,28 +455,6 @@ local function menu_set_hop()
     sleep(1)
 end
 
--- Test inject cookie tanpa launch
-local function menu_test_inject()
-    cls()
-    print("=== TEST INJECT COOKIE ===")
-    print("")
-    if PKG == "" then
-        print("[!] Set package dulu"); sleep(2); return
-    end
-    local cookie = read_file(COOKIE_FILE)
-    if cookie == "" then
-        print("[!] Set cookie dulu"); sleep(2); return
-    end
-    print("PKG    : " .. PKG)
-    print("Cookie : " .. cookie:sub(1, 20) .. "...")
-    print("")
-    print("Menjalankan inject...")
-    inject_cookie()
-    print("")
-    print("Cek log untuk hasil.")
-    sleep(2)
-end
-
 -- ============================================
 -- MAIN MENU
 -- ============================================
@@ -528,21 +463,20 @@ local function main()
 
     while true do
         cls()
-        print("=== SIMPLE HOPPER v1.4 ===")
+        print("=== SIMPLE HOPPER v1.3 ===")
         print("")
         local cookie = read_file(COOKIE_FILE)
         local ps     = load_ps()
         print("Package : " .. (PKG ~= "" and PKG or "-"))
-        print("Cookie  : " .. (cookie ~= "" and cookie:sub(1, 16) .. "..." or "-"))
+        print("Cookie  : " .. (cookie ~= "" and cookie:sub(1,16).."..." or "-"))
         print("PS      : " .. #ps)
-        print("Hop     : " .. (HOP_MIN == 0 and "OFF" or HOP_MIN .. "m"))
+        print("Hop     : " .. (HOP_MIN == 0 and "OFF" or HOP_MIN.."m"))
         print("")
         print("1. Set package")
         print("2. Set cookie")
         print("3. Kelola PS links")
         print("4. Set hop interval")
         print("5. START")
-        print("6. Test inject cookie")
         print("0. Keluar")
         print("")
         local ch = ask("Pilih")
@@ -551,7 +485,6 @@ local function main()
         elseif ch == "3" then menu_set_ps()
         elseif ch == "4" then menu_set_hop()
         elseif ch == "5" then run_hopper()
-        elseif ch == "6" then menu_test_inject()
         elseif ch == "0" then cls(); print("Keluar."); break
         end
     end
