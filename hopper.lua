@@ -1,4 +1,4 @@
--- Simple PS Hopper v1.4
+-- Simple PS Hopper v1.3
 -- Single package | Menu-based | sleep-based loop
 -- Target: Termux + Root Android
 -- ============================================
@@ -8,7 +8,6 @@ local PS_FILE     = "/sdcard/private_servers.txt"
 local PKG_FILE    = "/sdcard/.hopper_pkg"
 local COOKIE_FILE = "/sdcard/.hopper_cookie"
 local STOP_FILE   = "/sdcard/.hopper_stop"
-local HOP_FILE    = "/sdcard/.hopper_interval"   -- [NEW] simpan interval
 
 local RONIX_KEY_DIR  = "/storage/emulated/0/RonixExploit/internal/"
 local RONIX_KEY_PATH = RONIX_KEY_DIR .. "_key.txt"
@@ -100,11 +99,6 @@ local function tail_log(n)
     return out
 end
 
--- [NEW] Simpan hop interval ke file
-local function save_hop()
-    save_file(HOP_FILE, tostring(HOP_MIN))
-end
-
 -- ============================================
 -- CORE
 -- ============================================
@@ -114,18 +108,6 @@ local function is_running()
     if not h then return false end
     local r = h:read("*a") or ""; h:close()
     return r:match("%d+") ~= nil
-end
-
--- [NEW] Clear cache app tanpa hapus shared_prefs (cookie tetap aman)
-local function clear_cache()
-    if PKG == "" then return end
-    log("Clearing cache: " .. PKG)
-    -- Hapus folder cache & code_cache saja, bukan seluruh data
-    su_exec("rm -rf /data/data/" .. PKG .. "/cache/*")
-    su_exec("rm -rf /data/data/" .. PKG .. "/code_cache/*")
-    -- Hapus juga cache eksternal di sdcard jika ada
-    su_exec("rm -rf /sdcard/Android/data/" .. PKG .. "/cache/*")
-    log("Cache cleared")
 end
 
 local function inject_cookie()
@@ -143,6 +125,7 @@ local function inject_cookie()
     f:close()
     su_exec("mkdir -p '" .. dir .. "'")
     su_exec("cp '" .. tmp .. "' '" .. target .. "'")
+    -- Ambil UID app lalu chown — ini kunci agar Roblox mau baca filenya
     local uid_h = io.popen("su -c 'stat -c %u /data/data/" .. PKG .. "' 2>/dev/null")
     local uid = uid_h and uid_h:read("*l") or ""
     if uid_h then uid_h:close() end
@@ -176,6 +159,7 @@ local function inject_trackstat()
     log("Trackstat injected")
 end
 
+-- Inject semua — hanya dipanggil sekali saat start
 local function inject_all()
     inject_cookie()
     inject_key()
@@ -183,19 +167,10 @@ local function inject_all()
     inject_trackstat()
 end
 
--- [MODIFIED] Clear cache dulu sebelum launch, lalu inject ulang cookie
 local function launch(ps_link, ps_idx, ps_total)
     log(string.format("Launching PS %d/%d", ps_idx, ps_total))
     su_exec("am force-stop " .. PKG)
-    sleep(1)
-
-    -- [NEW] Clear cache setelah force-stop, sebelum launch
-    clear_cache()
-    sleep(1)
-
-    -- Re-inject cookie setelah cache dibersihkan
-    inject_cookie()
-
+    sleep(2)
     local dp = ps_link:match("^intent://(.-)#Intent")
            or ps_link:gsub("^https?://","")
     local intent = "intent://" .. dp
@@ -212,7 +187,7 @@ local function show_status(cur_ps, ps_total, crash_count,
                             runtime_m, hop_elapsed_m, status_str)
     cls()
     print("========================")
-    print("   HOPPER MONITOR v1.4  ")
+    print("   HOPPER MONITOR v1.3  ")
     print("========================")
     print("")
     print("Pkg    : " .. PKG)
@@ -248,6 +223,7 @@ local function run_hopper()
         print("[!] Package belum diset!"); sleep(2); return
     end
 
+    -- Bersihkan stop file lama
     os.remove(STOP_FILE)
     os.execute("rm -f " .. HOPPER_LOG .. " 2>/dev/null")
 
@@ -261,15 +237,19 @@ local function run_hopper()
     local start_time  = os.time()
     local hop_time    = os.time()
 
+    -- Inject semua sekali di awal
     log("Injecting...")
     inject_all()
 
+    -- Launch pertama
     launch(ps_list[ptr], ptr, #ps_list)
     cur_ps = ptr
     ptr = ptr + 1
     if ptr > #ps_list then ptr = 1 end
 
+    -- Loop: tiap 5 detik cek input 'q' atau kondisi hop/crash
     while true do
+        -- read -t 5: tunggu input 5 detik, kalau ada 'q' langsung stop
         local h = io.popen("bash -c 'read -t 5 -r line < /dev/tty 2>/dev/null; echo \"$line\"' 2>/dev/null")
         local inp = ""
         if h then inp = h:read("*l") or ""; h:close() end
@@ -291,6 +271,7 @@ local function run_hopper()
         local running       = is_running()
         local status_str    = running and "RUNNING" or "NOT RUNNING"
 
+        -- Watchdog: crash
         if not running then
             crash_count = crash_count + 1
             log("Crash #" .. crash_count .. " relaunch PS " .. cur_ps)
@@ -298,6 +279,7 @@ local function run_hopper()
             hop_time = os.time()
         end
 
+        -- Hop timer
         if HOP_MIN > 0 and hop_elapsed_s >= hop_sec then
             log("Hop -> PS " .. ptr)
             launch(ps_list[ptr], ptr, #ps_list)
@@ -308,6 +290,7 @@ local function run_hopper()
             hop_elapsed_m = 0
         end
 
+        -- Update display tiap ~60 detik (12 x 5s)
         local tick = math.floor((now - start_time) % 60)
         if tick < 5 then
             show_status(cur_ps, #ps_list, crash_count,
@@ -455,7 +438,6 @@ local function menu_set_ps()
     end
 end
 
--- [MODIFIED] Sekarang auto-save ke file setiap kali interval diubah
 local function menu_set_hop()
     cls()
     print("=== SET HOP INTERVAL ===")
@@ -466,8 +448,7 @@ local function menu_set_hop()
     local v = tonumber(inp)
     if v and v >= 0 then
         HOP_MIN = v
-        save_hop()   -- [NEW] simpan ke file
-        print("[+] Hop: " .. (HOP_MIN == 0 and "OFF" or HOP_MIN .. "m") .. " (tersimpan)")
+        print("[+] Hop: " .. (HOP_MIN == 0 and "OFF" or HOP_MIN .. "m"))
     else
         print("[!] Tidak valid")
     end
@@ -480,13 +461,9 @@ end
 local function main()
     PKG = read_file(PKG_FILE)
 
-    -- [NEW] Load hop interval dari file saat startup
-    local saved_hop = tonumber(read_file(HOP_FILE)) or 0
-    if saved_hop >= 0 then HOP_MIN = saved_hop end
-
     while true do
         cls()
-        print("=== SIMPLE HOPPER v1.4 ===")
+        print("=== SIMPLE HOPPER v1.3 ===")
         print("")
         local cookie = read_file(COOKIE_FILE)
         local ps     = load_ps()
