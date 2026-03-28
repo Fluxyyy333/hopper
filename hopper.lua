@@ -1,6 +1,7 @@
--- Simple PS Hopper v1.3
--- Single package | Menu-based | sleep-based loop
--- Target: Termux + Root Android
+-- Simple PS Hopper v1.3 (PATCHED)
+-- Patch 1: Cache-only clear before each launch (fixes crash on server switch)
+-- Patch 2: Fixed bash/tty hang -> background sh reader (fixes P2 crash)
+-- Patch 3: Crash watchdog no longer resets hop timer (fixes infinite dead-link loop)
 -- ============================================
 
 local HOPPER_LOG  = "/sdcard/hopper_log.txt"
@@ -8,6 +9,7 @@ local PS_FILE     = "/sdcard/private_servers.txt"
 local PKG_FILE    = "/sdcard/.hopper_pkg"
 local COOKIE_FILE = "/sdcard/.hopper_cookie"
 local STOP_FILE   = "/sdcard/.hopper_stop"
+local INPUT_FILE  = "/sdcard/.hopper_input"  -- PATCH 2
 
 local RONIX_KEY_DIR  = "/storage/emulated/0/RonixExploit/internal/"
 local RONIX_KEY_PATH = RONIX_KEY_DIR .. "_key.txt"
@@ -100,6 +102,25 @@ local function tail_log(n)
 end
 
 -- ============================================
+-- PATCH 2: Non-blocking input via background sh
+-- Replaces: io.popen("bash -c 'read -t 5 < /dev/tty'") which crashes Termux
+-- ============================================
+local function start_bg_input_reader()
+    os.remove(INPUT_FILE)
+    os.execute("sh -c 'read line; echo \"$line\" > " .. INPUT_FILE .. "' &")
+end
+
+local function check_bg_input()
+    if file_exists(INPUT_FILE) then
+        local val = read_file(INPUT_FILE)
+        os.remove(INPUT_FILE)
+        start_bg_input_reader()
+        return val
+    end
+    return ""
+end
+
+-- ============================================
 -- CORE
 -- ============================================
 local function is_running()
@@ -125,7 +146,7 @@ local function inject_cookie()
     f:close()
     su_exec("mkdir -p '" .. dir .. "'")
     su_exec("cp '" .. tmp .. "' '" .. target .. "'")
-    -- Ambil UID app lalu chown — ini kunci agar Roblox mau baca filenya
+
     local uid_h = io.popen("su -c 'stat -c %u /data/data/" .. PKG .. "' 2>/dev/null")
     local uid = uid_h and uid_h:read("*l") or ""
     if uid_h then uid_h:close() end
@@ -159,7 +180,6 @@ local function inject_trackstat()
     log("Trackstat injected")
 end
 
--- Inject semua — hanya dipanggil sekali saat start
 local function inject_all()
     inject_cookie()
     inject_key()
@@ -171,6 +191,13 @@ local function launch(ps_link, ps_idx, ps_total)
     log(string.format("Launching PS %d/%d", ps_idx, ps_total))
     su_exec("am force-stop " .. PKG)
     sleep(2)
+
+    -- PATCH 1: Clear ONLY cache before each launch (NOT data — that would wipe login)
+    su_exec("rm -rf /data/data/" .. PKG .. "/cache/*")
+    su_exec("rm -rf /data/data/" .. PKG .. "/code_cache/*")
+    su_exec("rm -rf /sdcard/Android/data/" .. PKG .. "/cache/*")
+    log("Cache cleared")
+
     local dp = ps_link:match("^intent://(.-)#Intent")
            or ps_link:gsub("^https?://","")
     local intent = "intent://" .. dp
@@ -207,12 +234,12 @@ local function show_status(cur_ps, ps_total, crash_count,
     end
     print("")
     print("========================")
-    print("Ketik [q] + Enter untuk STOP")
+    print("[q]=STOP  [h]=HOP NOW")
     print("========================")
 end
 
 -- ============================================
--- HOPPER LOOP
+-- HOPPER LOOP (PATCHED)
 -- ============================================
 local function run_hopper()
     local ps_list = load_ps()
@@ -223,8 +250,8 @@ local function run_hopper()
         print("[!] Package belum diset!"); sleep(2); return
     end
 
-    -- Bersihkan stop file lama
     os.remove(STOP_FILE)
+    os.remove(INPUT_FILE)
     os.execute("rm -f " .. HOPPER_LOG .. " 2>/dev/null")
 
     log("=== Hopper Started ===")
@@ -237,23 +264,22 @@ local function run_hopper()
     local start_time  = os.time()
     local hop_time    = os.time()
 
-    -- Inject semua sekali di awal
     log("Injecting...")
     inject_all()
 
-    -- Launch pertama
     launch(ps_list[ptr], ptr, #ps_list)
     cur_ps = ptr
     ptr = ptr + 1
     if ptr > #ps_list then ptr = 1 end
 
-    -- Loop: tiap 5 detik cek input 'q' atau kondisi hop/crash
+    -- PATCH 2: start background sh reader instead of broken bash/tty popen
+    start_bg_input_reader()
+
     while true do
-        -- read -t 5: tunggu input 5 detik, kalau ada 'q' langsung stop
-        local h = io.popen("bash -c 'read -t 5 -r line < /dev/tty 2>/dev/null; echo \"$line\"' 2>/dev/null")
-        local inp = ""
-        if h then inp = h:read("*l") or ""; h:close() end
-        inp = inp:gsub("%c",""):gsub("^%s+",""):gsub("%s+$","")
+        sleep(5)  -- simple sleep, no hanging popen
+
+        -- PATCH 2: check background input file instead of bash read
+        local inp = check_bg_input()
 
         if inp:lower() == "q" then
             log("User stop")
@@ -270,27 +296,35 @@ local function run_hopper()
         local hop_elapsed_m = math.floor(hop_elapsed_s / 60)
         local running       = is_running()
         local status_str    = running and "RUNNING" or "NOT RUNNING"
+        local did_action    = false
 
-        -- Watchdog: crash
-        if not running then
-            crash_count = crash_count + 1
-            log("Crash #" .. crash_count .. " relaunch PS " .. cur_ps)
-            launch(ps_list[cur_ps], cur_ps, #ps_list)
-            hop_time = os.time()
+        -- Manual hop on [h]
+        if inp:lower() == "h" then
+            log("Manual hop -> PS " .. ptr)
+            launch(ps_list[ptr], ptr, #ps_list)
+            cur_ps = ptr; ptr = ptr + 1
+            if ptr > #ps_list then ptr = 1 end
+            hop_time = os.time(); did_action = true
         end
 
         -- Hop timer
-        if HOP_MIN > 0 and hop_elapsed_s >= hop_sec then
+        if not did_action and HOP_MIN > 0 and hop_elapsed_s >= hop_sec then
             log("Hop -> PS " .. ptr)
             launch(ps_list[ptr], ptr, #ps_list)
-            cur_ps = ptr
-            ptr = ptr + 1
+            cur_ps = ptr; ptr = ptr + 1
             if ptr > #ps_list then ptr = 1 end
-            hop_time = os.time()
-            hop_elapsed_m = 0
+            hop_time = os.time(); hop_elapsed_m = 0; did_action = true
         end
 
-        -- Update display tiap ~60 detik (12 x 5s)
+        -- PATCH 3: Crash watchdog — does NOT reset hop_time so dead links can't loop forever
+        if not running and not did_action then
+            crash_count = crash_count + 1
+            log("Crash #" .. crash_count .. " relaunch PS " .. cur_ps)
+            launch(ps_list[cur_ps], cur_ps, #ps_list)
+            -- hop_time intentionally NOT reset here
+        end
+
+        -- Update display every ~60s
         local tick = math.floor((now - start_time) % 60)
         if tick < 5 then
             show_status(cur_ps, #ps_list, crash_count,
@@ -300,6 +334,8 @@ local function run_hopper()
 
     ::hopper_stop::
     os.remove(STOP_FILE)
+    os.remove(INPUT_FILE)
+    os.execute("pkill -f 'read line' 2>/dev/null")
     log("=== Hopper Stopped ===")
     show_status(cur_ps, #ps_list, crash_count, 0, 0, "STOPPED")
     print("")
@@ -463,7 +499,7 @@ local function main()
 
     while true do
         cls()
-        print("=== SIMPLE HOPPER v1.3 ===")
+        print("=== SIMPLE HOPPER v1.3 (PATCHED) ===")
         print("")
         local cookie = read_file(COOKIE_FILE)
         local ps     = load_ps()
