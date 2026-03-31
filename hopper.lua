@@ -1,4 +1,4 @@
--- Simple PS Hopper v1.4.3
+-- Simple PS Hopper v1.4.4
 -- Patch 1: Cache-only clear before each launch (fixes crash on server switch)
 -- Patch 2: Fixed bash/tty hang -> background sh reader (fixes P2 crash)
 -- Patch 3: Crash watchdog no longer resets hop timer (fixes infinite dead-link loop)
@@ -12,6 +12,11 @@
 --         - WebView: INSERT OR IGNORE setelah UPDATE (handle row belum ada)
 --         - Inject userId/userName ke SharedPrefs untuk auth state
 --         - Tambah menu diagnostik (dump SharedPrefs)
+-- v1.4.4: Revert inject_cookie ke base v1.4.4AdoptMeAgent yang clean
+--         - Hapus over-engineering (RobloxUserId inject, 3-case XML)
+--         - Temp file untuk XML read + UID (fix TTY corruption)
+--         - WebView schema fix: hapus last_access_utc/last_update_utc
+--         - INSERT OR IGNORE dengan schema benar untuk fresh install
 -- ============================================
 
 local HOPPER_LOG   = "/sdcard/hopper_log.txt"
@@ -402,7 +407,7 @@ local function show_status(cur_ps, ps_total, crash_count,
                             runtime_m, hop_elapsed_m, status_str)
     cls()
     out("========================")
-    out("  HOPPER MONITOR v1.4.3 ")
+    out("  HOPPER MONITOR v1.4.4")
     out("========================")
     out("")
     out("Pkg    : " .. PKG)
@@ -721,7 +726,7 @@ local function main()
 
     while true do
         cls()
-        out("=== SIMPLE HOPPER v1.4.3 ===")
+        out("=== SIMPLE HOPPER v1.4.4===")
         out("")
         local cookie = read_file(COOKIE_FILE)
         local ps     = load_ps()
