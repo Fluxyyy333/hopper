@@ -436,7 +436,7 @@ local function dump_shared_prefs()
             out("=== " .. fname .. " (" .. sz .. " bytes) ===")
             if sz == 0 then
                 out("  (kosong atau tidak bisa dibaca)")
-            elseif sz > 8192 then
+            elseif sz > 20480 then
                 out("  (file terlalu besar, skip)")
             else
                 local content = su_read('cat "' .. fpath .. '"')
