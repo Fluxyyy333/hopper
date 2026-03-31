@@ -1,15 +1,19 @@
--- Simple PS Hopper v1.3 (PATCHED)
--- Patch 1: Cache-only clear before each launch (fixes crash on server switch)
--- Patch 2: Fixed bash/tty hang -> background sh reader (fixes P2 crash)
--- Patch 3: Crash watchdog no longer resets hop timer (fixes infinite dead-link loop)
+-- Simple PS Hopper v1.7 STANDALONE
+-- Base: v1.4.2 (fully working, zero dependencies, no backend)
+-- v1.7: Pure standalone — no web backend, no ngrok, no API polling
+--       Just local menu + auto hopping. Works offline forever.
+-- Config: Package, cookie, PS links, hop interval (all local files)
+-- Menu: Setup config, then auto-start hopping. Ctrl+C to stop.
 -- ============================================
 
-local HOPPER_LOG  = "/sdcard/hopper_log.txt"
-local PS_FILE     = "/sdcard/private_servers.txt"
-local PKG_FILE    = "/sdcard/.hopper_pkg"
-local COOKIE_FILE = "/sdcard/.hopper_cookie"
-local STOP_FILE   = "/sdcard/.hopper_stop"
-local INPUT_FILE  = "/sdcard/.hopper_input"  -- PATCH 2
+local HOPPER_LOG   = "/sdcard/hopper_log.txt"
+local PS_FILE      = "/sdcard/private_servers.txt"
+local PKG_FILE     = "/sdcard/.hopper_pkg"
+local COOKIE_FILE  = "/sdcard/.hopper_cookie"
+local STOP_FILE    = "/sdcard/.hopper_stop"
+local ACCOUNT_FILE = "/sdcard/.hopper_account"
+local HOP_FILE     = "/sdcard/.hopper_hop"
+local PTR_FILE     = "/sdcard/.hopper_ptr"
 
 local RONIX_KEY_DIR  = "/storage/emulated/0/RonixExploit/internal/"
 local RONIX_KEY_PATH = RONIX_KEY_DIR .. "_key.txt"
@@ -40,6 +44,11 @@ end
 local function log(msg)
     local f = io.open(HOPPER_LOG, "a")
     if f then f:write(os.date("[%H:%M:%S] ") .. msg .. "\n"); f:close() end
+end
+
+local function out(text)
+    io.write((text or "") .. "\r\n")
+    io.flush()
 end
 
 local function cls()
@@ -95,29 +104,30 @@ local function tail_log(n)
     if not f then return {} end
     for line in f:lines() do table.insert(lines, line) end
     f:close()
-    local out = {}
+    local result = {}
     local s = math.max(1, #lines - n + 1)
-    for i = s, #lines do table.insert(out, lines[i]) end
-    return out
+    for i = s, #lines do table.insert(result, lines[i]) end
+    return result
 end
 
--- ============================================
--- PATCH 2: Non-blocking input via background sh
--- Replaces: io.popen("bash -c 'read -t 5 < /dev/tty'") which crashes Termux
--- ============================================
-local function start_bg_input_reader()
-    os.remove(INPUT_FILE)
-    os.execute("sh -c 'read line; echo \"$line\" > " .. INPUT_FILE .. "' &")
+local function json_field(json_str, field)
+    local pat_str = '"' .. field .. '"%s*:%s*"([^"]*)"'
+    local val = json_str:match(pat_str)
+    if val then return val end
+    local pat_num = '"' .. field .. '"%s*:%s*(%d+)'
+    return json_str:match(pat_num)
 end
 
-local function check_bg_input()
-    if file_exists(INPUT_FILE) then
-        local val = read_file(INPUT_FILE)
-        os.remove(INPUT_FILE)
-        start_bg_input_reader()
-        return val
-    end
-    return ""
+local function fetch_account_info(cookie)
+    local h = io.popen('curl -s --connect-timeout 5 '
+        .. '-H "Cookie: .ROBLOSECURITY=' .. cookie .. '" '
+        .. '"https://users.roblox.com/v1/users/authenticated" 2>/dev/null')
+    if not h then return nil, nil end
+    local body = h:read("*a") or ""
+    h:close()
+    local name = json_field(body, "name")
+    local id   = json_field(body, "id")
+    return name, id
 end
 
 -- ============================================
@@ -137,13 +147,47 @@ local function inject_cookie()
     local dir    = "/data/data/" .. PKG .. "/shared_prefs"
     local target = dir .. "/RobloxSharedPreferences.xml"
     local tmp    = "/sdcard/.hcookie_tmp.xml"
+
+    local xh = io.popen("su -c 'cat \"" .. target .. "\"' 2>/dev/null")
+    local existing = xh and xh:read("*a") or ""
+    if xh then xh:close() end
+
+    local xml_content
+    if existing ~= "" and existing:find("ROBLOSECURITY") then
+        local cookie_safe = cookie:gsub("%%", "%%%%")
+        xml_content = existing:gsub(
+            '(<string%s+name="%.ROBLOSECURITY">)[^<]*(</string>)',
+            '%1' .. cookie_safe .. '%2'
+        )
+        log("Cookie: replace di XML existing")
+    else
+        xml_content = "<?xml version='1.0' encoding='utf-8' standalone='yes' ?>\n"
+                   .. "<map>\n"
+                   .. '    <string name=".ROBLOSECURITY">' .. cookie .. "</string>\n"
+                   .. "</map>\n"
+        log("Cookie: tulis XML minimal (fresh)")
+    end
+
     local f = io.open(tmp, "w")
     if not f then log("ERR: gagal tulis cookie tmp"); return end
-    f:write("<?xml version='1.0' encoding='utf-8' standalone='yes' ?>\n")
-    f:write("<map>\n")
-    f:write('    <string name=".ROBLOSECURITY">' .. cookie .. "</string>\n")
-    f:write("</map>\n")
+    f:write(xml_content)
     f:close()
+
+    -- Update WebView cookie store via sqlite3
+    local cookie_db = "/data/data/" .. PKG .. "/app_webview/Default/Cookies"
+    local sql_tmp   = "/sdcard/.hopper_wv.sql"
+    local safe      = cookie:gsub("'", "''")
+    local sf = io.open(sql_tmp, "w")
+    if sf then
+        sf:write("UPDATE cookies SET value='" .. safe .. "' WHERE name='.ROBLOSECURITY';\n")
+        sf:close()
+        su_exec("/data/data/com.termux/files/usr/bin/sqlite3 '" .. cookie_db .. "' < '" .. sql_tmp .. "'")
+        os.remove(sql_tmp)
+        log("WebView cookie updated")
+    else
+        log("WARN: gagal tulis sql tmp")
+    end
+
     su_exec("mkdir -p '" .. dir .. "'")
     su_exec("cp '" .. tmp .. "' '" .. target .. "'")
 
@@ -155,6 +199,7 @@ local function inject_cookie()
         su_exec("chown " .. uid .. ":" .. uid .. " '" .. target .. "'")
     end
     su_exec("chmod 660 '" .. target .. "'")
+    su_exec("restorecon '" .. target .. "'")
     os.remove(tmp)
     log("Cookie injected (uid=" .. uid .. ")")
 end
@@ -180,19 +225,25 @@ local function inject_trackstat()
     log("Trackstat injected")
 end
 
-local function inject_all()
+local function inject_all_verbose()
+    out("[1/4] Injecting cookie...")
     inject_cookie()
+    out("[2/4] Injecting Ronix key...")
     inject_key()
+    out("[3/4] Injecting autoexec...")
     inject_autoexec()
+    out("[4/4] Injecting trackstat...")
     inject_trackstat()
+    out("[+] All injected.")
 end
 
 local function launch(ps_link, ps_idx, ps_total)
     log(string.format("Launching PS %d/%d", ps_idx, ps_total))
+    out(string.format("[*] Stopping %s...", PKG))
     su_exec("am force-stop " .. PKG)
     sleep(2)
 
-    -- PATCH 1: Clear ONLY cache before each launch (NOT data — that would wipe login)
+    out("[*] Clearing cache...")
     su_exec("rm -rf /data/data/" .. PKG .. "/cache/*")
     su_exec("rm -rf /data/data/" .. PKG .. "/code_cache/*")
     su_exec("rm -rf /sdcard/Android/data/" .. PKG .. "/cache/*")
@@ -203,7 +254,10 @@ local function launch(ps_link, ps_idx, ps_total)
     local intent = "intent://" .. dp
         .. "#Intent;scheme=https;package=" .. PKG
         .. ";action=android.intent.action.VIEW;end"
+
+    out("[*] Launching intent...")
     su_exec('am start --user 0 "' .. intent .. '"')
+    out(string.format("[+] Launched PS %d/%d", ps_idx, ps_total))
     log(string.format("Launched PS %d/%d", ps_idx, ps_total))
 end
 
@@ -213,132 +267,143 @@ end
 local function show_status(cur_ps, ps_total, crash_count,
                             runtime_m, hop_elapsed_m, status_str)
     cls()
-    print("========================")
-    print("   HOPPER MONITOR v1.3  ")
-    print("========================")
-    print("")
-    print("Pkg    : " .. PKG)
-    print(string.format("PS     : %d / %d", cur_ps, ps_total))
-    print("Status : " .. status_str)
-    print("Crash  : " .. crash_count)
-    print(string.format("Runtime: %dm", runtime_m))
+    out("========================")
+    out("  HOPPER MONITOR v1.7 ")
+    out("========================")
+    out("")
+    out("Pkg    : " .. PKG)
+    out(string.format("PS     : %d / %d", cur_ps, ps_total))
+    out("Status : " .. status_str)
+    out("Crash  : " .. crash_count)
+    out(string.format("Runtime: %dm", runtime_m))
     if HOP_MIN > 0 then
-        print(string.format("Hop    : %dm / %dm", hop_elapsed_m, HOP_MIN))
+        out(string.format("Hop    : %dm / %dm", hop_elapsed_m, HOP_MIN))
     else
-        print("Hop    : OFF")
+        out("Hop    : OFF")
     end
-    print("")
-    print("--- Log ---")
+    out("")
+    out("--- Log ---")
     for _, line in ipairs(tail_log(4)) do
-        print(line)
+        out(line)
     end
-    print("")
-    print("========================")
-    print("[q]=STOP  [h]=HOP NOW")
-    print("========================")
+    out("")
+    out("========================")
+    out("[Ctrl+C] = STOP")
+    out("========================")
 end
 
 -- ============================================
--- HOPPER LOOP (PATCHED)
+-- HOPPER LOOP
 -- ============================================
 local function run_hopper()
     local ps_list = load_ps()
     if #ps_list == 0 then
-        print("[!] Tidak ada PS link!"); sleep(2); return
+        out("[!] Tidak ada PS link!"); sleep(2); return
     end
     if PKG == "" then
-        print("[!] Package belum diset!"); sleep(2); return
+        out("[!] Package belum diset!"); sleep(2); return
     end
 
     os.remove(STOP_FILE)
-    os.remove(INPUT_FILE)
     os.execute("rm -f " .. HOPPER_LOG .. " 2>/dev/null")
 
     log("=== Hopper Started ===")
     log("Pkg: " .. PKG .. " | PS: " .. #ps_list .. " | Hop: " .. HOP_MIN .. "m")
 
-    local ptr         = 1
-    local cur_ps      = 1
+    -- Resume PS position
+    local ptr = 1
+    local saved_ptr = tonumber(read_file(PTR_FILE))
+    if saved_ptr and saved_ptr >= 1 and saved_ptr <= #ps_list then
+        ptr = saved_ptr
+        out("[*] Resuming from PS " .. ptr)
+        log("Resumed from PS " .. ptr)
+    else
+        out("[*] Starting from PS 1")
+    end
+    os.remove(PTR_FILE)
+
+    local cur_ps      = ptr
     local crash_count = 0
     local hop_sec     = HOP_MIN * 60
     local start_time  = os.time()
     local hop_time    = os.time()
+    local last_display = 0
 
-    log("Injecting...")
-    inject_all()
+    out("")
+    inject_all_verbose()
+    out("")
 
     launch(ps_list[ptr], ptr, #ps_list)
     cur_ps = ptr
     ptr = ptr + 1
     if ptr > #ps_list then ptr = 1 end
 
-    -- PATCH 2: start background sh reader instead of broken bash/tty popen
-    start_bg_input_reader()
+    out("")
+    out("[*] Hopper running... Ctrl+C to stop")
+    sleep(3)
 
-    while true do
-        sleep(5)  -- simple sleep, no hanging popen
+    local ok, err = pcall(function()
+        while true do
+            sleep(5)
 
-        -- PATCH 2: check background input file instead of bash read
-        local inp = check_bg_input()
+            if file_exists(STOP_FILE) then
+                log("Stop file detected")
+                return
+            end
 
-        if inp:lower() == "q" then
-            log("User stop")
-            goto hopper_stop
+            local now           = os.time()
+            local runtime_m     = math.floor((now - start_time) / 60)
+            local hop_elapsed_s = now - hop_time
+            local hop_elapsed_m = math.floor(hop_elapsed_s / 60)
+            local running       = is_running()
+            local status_str    = running and "RUNNING" or "NOT RUNNING"
+            local did_action    = false
+
+            -- Hop timer
+            if HOP_MIN > 0 and hop_elapsed_s >= hop_sec then
+                log("Hop -> PS " .. ptr)
+                launch(ps_list[ptr], ptr, #ps_list)
+                cur_ps = ptr; ptr = ptr + 1
+                if ptr > #ps_list then ptr = 1 end
+                hop_time = os.time(); hop_elapsed_m = 0; did_action = true
+            end
+
+            -- PATCH 3: Crash watchdog — does NOT reset hop_time
+            if not running and not did_action then
+                crash_count = crash_count + 1
+                log("Crash #" .. crash_count .. " relaunch PS " .. cur_ps)
+                launch(ps_list[cur_ps], cur_ps, #ps_list)
+            end
+
+            -- Update display every 15 seconds
+            if now - last_display >= 15 then
+                show_status(cur_ps, #ps_list, crash_count,
+                            runtime_m, hop_elapsed_m, status_str)
+                last_display = now
+            end
         end
-        if file_exists(STOP_FILE) then
-            log("Stop file detected")
-            goto hopper_stop
-        end
+    end)
 
-        local now           = os.time()
-        local runtime_m     = math.floor((now - start_time) / 60)
-        local hop_elapsed_s = now - hop_time
-        local hop_elapsed_m = math.floor(hop_elapsed_s / 60)
-        local running       = is_running()
-        local status_str    = running and "RUNNING" or "NOT RUNNING"
-        local did_action    = false
-
-        -- Manual hop on [h]
-        if inp:lower() == "h" then
-            log("Manual hop -> PS " .. ptr)
-            launch(ps_list[ptr], ptr, #ps_list)
-            cur_ps = ptr; ptr = ptr + 1
-            if ptr > #ps_list then ptr = 1 end
-            hop_time = os.time(); did_action = true
-        end
-
-        -- Hop timer
-        if not did_action and HOP_MIN > 0 and hop_elapsed_s >= hop_sec then
-            log("Hop -> PS " .. ptr)
-            launch(ps_list[ptr], ptr, #ps_list)
-            cur_ps = ptr; ptr = ptr + 1
-            if ptr > #ps_list then ptr = 1 end
-            hop_time = os.time(); hop_elapsed_m = 0; did_action = true
-        end
-
-        -- PATCH 3: Crash watchdog — does NOT reset hop_time so dead links can't loop forever
-        if not running and not did_action then
-            crash_count = crash_count + 1
-            log("Crash #" .. crash_count .. " relaunch PS " .. cur_ps)
-            launch(ps_list[cur_ps], cur_ps, #ps_list)
-            -- hop_time intentionally NOT reset here
-        end
-
-        -- Update display every ~60s
-        local tick = math.floor((now - start_time) % 60)
-        if tick < 5 then
-            show_status(cur_ps, #ps_list, crash_count,
-                        runtime_m, hop_elapsed_m, status_str)
-        end
+    if not ok then
+        log("Stopped: " .. tostring(err))
     end
 
-    ::hopper_stop::
+    -- Save PS pointer for resume
+    save_file(PTR_FILE, tostring(cur_ps))
+    log("Saved PS pointer: " .. cur_ps)
+
     os.remove(STOP_FILE)
-    os.remove(INPUT_FILE)
-    os.execute("pkill -f 'read line' 2>/dev/null")
     log("=== Hopper Stopped ===")
-    show_status(cur_ps, #ps_list, crash_count, 0, 0, "STOPPED")
-    print("")
+
+    cls()
+    out("========================")
+    out("   HOPPER STOPPED")
+    out("========================")
+    out("")
+    out("Last PS : " .. cur_ps .. " / " .. #ps_list)
+    out("Crashes : " .. crash_count)
+    out("Resume  : will start from PS " .. cur_ps)
+    out("")
 end
 
 -- ============================================
@@ -346,10 +411,10 @@ end
 -- ============================================
 local function menu_set_package()
     cls()
-    print("=== SET PACKAGE ===")
-    print("")
+    out("=== SET PACKAGE ===")
+    out("")
     local saved = read_file(PKG_FILE)
-    if saved ~= "" then print("Tersimpan: " .. saved); print("") end
+    if saved ~= "" then out("Tersimpan: " .. saved); out("") end
 
     local h = io.popen("pm list packages 2>/dev/null")
     local pkgs = {}
@@ -366,11 +431,11 @@ local function menu_set_package()
     end
 
     if #pkgs > 0 then
-        print("Package tersedia:")
+        out("Package tersedia:")
         for i, p in ipairs(pkgs) do
-            print(string.format("  %d. %s", i, p))
+            out(string.format("  %d. %s", i, p))
         end
-        print("")
+        out("")
     end
 
     local inp = ask("Nomor / nama (kosong=batal)")
@@ -380,59 +445,77 @@ local function menu_set_package()
     if new_pkg and new_pkg ~= "" then
         PKG = new_pkg
         save_file(PKG_FILE, PKG)
-        print("[+] Package: " .. PKG)
+        out("[+] Package: " .. PKG)
     else
-        print("[!] Tidak valid")
+        out("[!] Tidak valid")
     end
     sleep(1)
 end
 
 local function menu_set_cookie()
     cls()
-    print("=== SET COOKIE ===")
-    print("")
+    out("=== SET COOKIE ===")
+    out("")
     local saved = read_file(COOKIE_FILE)
     if saved ~= "" then
-        print("Tersimpan: " .. saved:sub(1,20) .. "...")
-        print("")
+        out("Tersimpan: " .. saved:sub(1,20) .. "...")
+        out("")
         local ch = ask("Ganti? (y/n)")
         if ch:lower() ~= "y" then return end
     end
-    print("Paste .ROBLOSECURITY (kosong=batal):")
-    print("")
+    out("Paste .ROBLOSECURITY (kosong=batal):")
+    out("")
     local raw = ask("")
-    if raw == "" then print("Batal."); sleep(1); return end
+    if raw == "" then out("Batal."); sleep(1); return end
     local ck = raw:match("(_|WARNING.+)$") or raw
     save_file(COOKIE_FILE, ck)
     os.execute("chmod 600 '" .. COOKIE_FILE .. "'")
-    print("[+] Cookie disimpan.")
-    sleep(1)
+    out("[+] Cookie disimpan.")
+
+    -- Inject immediately if package set
+    if PKG ~= "" then
+        out("[*] Injecting cookie...")
+        inject_cookie()
+        out("[+] Cookie injected.")
+    end
+
+    -- Fetch account info via Roblox API
+    out("[*] Fetching account info...")
+    local name, id = fetch_account_info(ck)
+    if name and id then
+        save_file(ACCOUNT_FILE, name .. ":" .. id)
+        out("[+] Account: " .. name .. " (" .. id .. ")")
+    else
+        save_file(ACCOUNT_FILE, "")
+        out("[!] Gagal fetch account info (cookie invalid?)")
+    end
+    sleep(2)
 end
 
 local function menu_set_ps()
     while true do
         cls()
-        print("=== PS LINKS ===")
-        print("")
+        out("=== PS LINKS ===")
+        out("")
         local ps = load_ps()
         if #ps == 0 then
-            print("  (kosong)")
+            out("  (kosong)")
         else
             for i, l in ipairs(ps) do
                 local d = #l > 42
                     and (l:sub(1,25) .. "..." .. l:sub(-12))
                     or l
-                print(string.format("  [%d] %s", i, d))
+                out(string.format("  [%d] %s", i, d))
             end
         end
-        print("")
-        print("a=Tambah  d=Hapus  c=Clear  0=Kembali")
-        print("")
+        out("")
+        out("1=Tambah  2=Hapus  3=Clear  0=Kembali")
+        out("")
         local opt = ask("")
         if opt == "0" or opt == "" then break
 
-        elseif opt == "a" then
-            print("Paste link (kosong=selesai):")
+        elseif opt == "1" then
+            out("Paste link (kosong=selesai):")
             local wf = io.open(PS_FILE, "a")
             local added = 0
             while true do
@@ -441,17 +524,17 @@ local function menu_set_ps()
                 if line:match("^https?://") and line:lower():match("code=") then
                     if wf then wf:write(line .. "\n") end
                     added = added + 1
-                    print("  [+] " .. added)
+                    out("  [+] " .. added)
                 else
-                    print("  [!] Tidak valid")
+                    out("  [!] Tidak valid")
                 end
             end
             if wf then wf:close() end
-            print(added .. " ditambahkan."); sleep(1)
+            out(added .. " ditambahkan."); sleep(1)
 
-        elseif opt == "d" then
+        elseif opt == "2" then
             local ps2 = load_ps()
-            if #ps2 == 0 then print("Kosong."); sleep(1)
+            if #ps2 == 0 then out("Kosong."); sleep(1)
             else
                 local n = tonumber(ask("Hapus nomor"))
                 if n and ps2[n] then
@@ -461,14 +544,14 @@ local function menu_set_ps()
                         for _, l in ipairs(ps2) do wf:write(l.."\n") end
                         wf:close()
                     end
-                    print("[+] Dihapus."); sleep(1)
-                else print("[!] Tidak valid"); sleep(1) end
+                    out("[+] Dihapus."); sleep(1)
+                else out("[!] Tidak valid"); sleep(1) end
             end
 
-        elseif opt == "c" then
+        elseif opt == "3" then
             if ask("Ketik 'hapus'") == "hapus" then
                 save_file(PS_FILE, "")
-                print("[+] Semua dihapus."); sleep(1)
+                out("[+] Semua dihapus."); sleep(1)
             end
         end
     end
@@ -476,17 +559,18 @@ end
 
 local function menu_set_hop()
     cls()
-    print("=== SET HOP INTERVAL ===")
-    print("")
-    print("Saat ini: " .. (HOP_MIN == 0 and "OFF" or HOP_MIN .. "m"))
-    print("")
+    out("=== SET HOP INTERVAL ===")
+    out("")
+    out("Saat ini: " .. (HOP_MIN == 0 and "OFF" or HOP_MIN .. "m"))
+    out("")
     local inp = ask("Hop tiap berapa menit? (0=OFF)")
     local v = tonumber(inp)
     if v and v >= 0 then
         HOP_MIN = v
-        print("[+] Hop: " .. (HOP_MIN == 0 and "OFF" or HOP_MIN .. "m"))
+        save_file(HOP_FILE, tostring(HOP_MIN))
+        out("[+] Hop: " .. (HOP_MIN == 0 and "OFF" or HOP_MIN .. "m"))
     else
-        print("[!] Tidak valid")
+        out("[!] Tidak valid")
     end
     sleep(1)
 end
@@ -497,31 +581,57 @@ end
 local function main()
     PKG = read_file(PKG_FILE)
 
+    local hop_saved = read_file(HOP_FILE)
+    local hop_val = tonumber(hop_saved)
+    if hop_val and hop_val >= 0 then HOP_MIN = hop_val end
+
     while true do
         cls()
-        print("=== SIMPLE HOPPER v1.3 (PATCHED) ===")
-        print("")
+        out("=== SIMPLE HOPPER v1.4.2 ===")
+        out("")
         local cookie = read_file(COOKIE_FILE)
         local ps     = load_ps()
-        print("Package : " .. (PKG ~= "" and PKG or "-"))
-        print("Cookie  : " .. (cookie ~= "" and cookie:sub(1,16).."..." or "-"))
-        print("PS      : " .. #ps)
-        print("Hop     : " .. (HOP_MIN == 0 and "OFF" or HOP_MIN.."m"))
-        print("")
-        print("1. Set package")
-        print("2. Set cookie")
-        print("3. Kelola PS links")
-        print("4. Set hop interval")
-        print("5. START")
-        print("0. Keluar")
-        print("")
+        out("Package : " .. (PKG ~= "" and PKG or "-"))
+
+        -- Show account info if available, fallback to cookie prefix
+        local acct = read_file(ACCOUNT_FILE)
+        if acct ~= "" then
+            local aname, aid = acct:match("^(.+):(%d+)$")
+            if aname then
+                out("Account : " .. aname .. " (" .. aid .. ")")
+            else
+                out("Account : " .. acct)
+            end
+        elseif cookie ~= "" then
+            out("Cookie  : " .. cookie:sub(1,16) .. "...")
+        else
+            out("Cookie  : -")
+        end
+
+        out("PS      : " .. #ps)
+        out("Hop     : " .. (HOP_MIN == 0 and "OFF" or HOP_MIN.."m"))
+
+        -- Show resume info if available
+        local saved_ptr = read_file(PTR_FILE)
+        if saved_ptr ~= "" then
+            out("Resume  : PS " .. saved_ptr)
+        end
+
+        out("")
+        out("1. Set package")
+        out("2. Set cookie")
+        out("3. Kelola PS links")
+        out("4. Set hop interval")
+        out("5. START")
+        out("0. Keluar")
+        out("")
         local ch = ask("Pilih")
         if     ch == "1" then menu_set_package()
         elseif ch == "2" then menu_set_cookie()
         elseif ch == "3" then menu_set_ps()
         elseif ch == "4" then menu_set_hop()
         elseif ch == "5" then run_hopper()
-        elseif ch == "0" then cls(); print("Keluar."); break
+        elseif ch == "0" then cls(); out("Keluar."); break
         end
     end
 end
