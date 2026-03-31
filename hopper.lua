@@ -202,36 +202,92 @@ local function inject_cookie()
     local cookie_db = "/data/data/" .. PKG .. "/app_webview/Default/Cookies"
     local sql_tmp   = "/sdcard/.hopper_wv.sql"
     local safe      = cookie:gsub("'", "''")
+    local sq3       = "/data/data/com.termux/files/usr/bin/sqlite3"
+
     local sf = io.open(sql_tmp, "w")
     if sf then
-        -- UPDATE untuk kasus already-logged-in (row sudah ada)
-        -- INSERT OR IGNORE untuk kasus fresh (row belum ada)
-        -- Schema dari cookie2.png — tanpa last_access_utc / last_update_utc
         local unix_now = os.time()
         local chrome_base = unix_now + 11644473600
         local now_us = string.format("%.0f", chrome_base * 1000000)
         local exp_us = string.format("%.0f", (chrome_base + 31536000) * 1000000)
+
+        -- Deteksi kolom yang ada di tabel cookies (beda tiap versi WebView)
+        local schema_tmp = "/sdcard/.hopper_schema.tmp"
+        os.execute("su -c '" .. sq3 .. " \"" .. cookie_db
+            .. "\" \"PRAGMA table_info(cookies);\"' > '"
+            .. schema_tmp .. "' 2>/dev/null")
+        local schema_raw = read_file(schema_tmp)
+        os.remove(schema_tmp)
+
+        local has_col = {}
+        for line in (schema_raw .. "\n"):gmatch("([^\n]+)") do
+            local col = line:match("^%d+|([^|]+)|")
+            if col then has_col[col] = true end
+        end
+        log("Schema cols: " .. schema_raw:gsub("\n"," "))
+
+        -- Bangun INSERT hanya dengan kolom yang benar-benar ada
+        local col_names = {
+            "creation_utc", "host_key", "name", "value",
+            "path", "expires_utc",
+            has_col["is_secure"]   and "is_secure"   or "secure",
+            has_col["is_httponly"] and "is_httponly"  or "httponly",
+            has_col["has_expires"] and "has_expires"  or nil,
+            has_col["is_persistent"] and "is_persistent" or
+                (has_col["persistent"] and "persistent" or nil),
+            "priority",
+        }
+        local col_vals = {
+            now_us, "'.roblox.com'", "'.ROBLOSECURITY'", "'" .. safe .. "'",
+            "'/'", exp_us,
+            "1", "1",
+            has_col["has_expires"]   and "1" or nil,
+            (has_col["is_persistent"] or has_col["persistent"]) and "1" or nil,
+            "1",
+        }
+        -- Kolom opsional — hanya tambahkan kalau ada di schema
+        local optional = {
+            {"encrypted_value",       "X''"},
+            {"samesite",              "-1"},
+            {"top_frame_site_key",    "''"},
+            {"source_scheme",         "2"},
+            {"source_port",           "443"},
+            {"is_same_party",         "0"},
+            {"source_type",           "0"},
+            {"has_cross_site_ancestor","0"},
+            {"last_access_utc",       now_us},
+            {"last_update_utc",       now_us},
+            {"firstpartyonly",        "0"},
+        }
+        for _, pair in ipairs(optional) do
+            if has_col[pair[1]] then
+                table.insert(col_names, pair[1])
+                table.insert(col_vals,  pair[2])
+            end
+        end
+
+        -- Filter nil entries
+        local final_cols, final_vals = {}, {}
+        for i, c in ipairs(col_names) do
+            if c ~= nil and col_vals[i] ~= nil then
+                table.insert(final_cols, c)
+                table.insert(final_vals, col_vals[i])
+            end
+        end
+
         sf:write(string.format(
-[[UPDATE cookies SET value='%s' WHERE name='.ROBLOSECURITY';
-INSERT OR IGNORE INTO cookies (
-    creation_utc, host_key, top_frame_site_key, name, value,
-    encrypted_value, path, expires_utc, is_secure, is_httponly,
-    samesite, has_expires, is_persistent,
-    priority, source_scheme, source_port,
-    source_type, has_cross_site_ancestor
-) VALUES (
-    %s, '.roblox.com', '', '.ROBLOSECURITY', '%s',
-    X'', '/', %s, 1, 1,
-    -1, 1, 1,
-    1, 2, 443,
-    0, 0
-);
-]], safe, now_us, safe, exp_us))
+            "UPDATE cookies SET value='%s' WHERE name='.ROBLOSECURITY';\n",
+            safe))
+        sf:write(string.format(
+            "INSERT OR IGNORE INTO cookies (%s) VALUES (%s);\n",
+            table.concat(final_cols, ", "),
+            table.concat(final_vals, ", ")))
         sf:close()
-        -- Jalankan sqlite3 dan tangkap error ke log
+
+        -- Jalankan dan tangkap error ke log
         local sq_err_tmp = "/sdcard/.hopper_sq_err.tmp"
-        os.execute("su -c '/data/data/com.termux/files/usr/bin/sqlite3 \""
-            .. cookie_db .. "\" < \"" .. sql_tmp .. "\"' > '"
+        os.execute("su -c '" .. sq3 .. " \"" .. cookie_db
+            .. "\" < \"" .. sql_tmp .. "\"' > '"
             .. sq_err_tmp .. "' 2>&1")
         local sq_err = read_file(sq_err_tmp)
         os.remove(sq_err_tmp)
