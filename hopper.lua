@@ -468,6 +468,11 @@ local function run_hopper()
     local hop_time    = os.time()
     local last_display = 0
 
+    -- Force-stop dulu sebelum inject supaya WebView DB tidak terkunci
+    out("[*] Stopping app before inject...")
+    su_exec("am force-stop " .. PKG)
+    sleep(2)
+
     out("")
     inject_all_verbose()
     out("")
