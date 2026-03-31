@@ -216,15 +216,20 @@ local function inject_cookie()
         os.execute("su -c '" .. sq3 .. " \"" .. cookie_db
             .. "\" \"PRAGMA table_info(cookies);\"' > '"
             .. schema_tmp .. "' 2>/dev/null")
-        local schema_raw = read_file(schema_tmp)
+        -- Baca tanpa strip newline (read_file strip \n, tidak bisa parse per-baris)
+        local sf2 = io.open(schema_tmp, "r")
+        local schema_raw = sf2 and sf2:read("*a") or ""
+        if sf2 then sf2:close() end
         os.remove(schema_tmp)
 
         local has_col = {}
-        for line in (schema_raw .. "\n"):gmatch("([^\n]+)") do
+        for line in schema_raw:gmatch("([^\n\r]+)") do
             local col = line:match("^%d+|([^|]+)|")
             if col then has_col[col] = true end
         end
-        log("Schema cols: " .. schema_raw:gsub("\n"," "))
+        log("Schema cols detected: " .. table.concat((function()
+            local t = {} for k in pairs(has_col) do table.insert(t, k) end return t
+        end)(), ","))
 
         -- Bangun INSERT hanya dengan kolom yang benar-benar ada
         local col_names = {
