@@ -157,142 +157,57 @@ local function is_running()
     return r:match("%d+") ~= nil
 end
 
--- PATCH 6: Rebuild inject_cookie for fresh install support
 local function inject_cookie()
     local cookie = read_file(COOKIE_FILE)
     if cookie == "" or PKG == "" then return end
-
-    -- Load account info for auth state injection
-    local acct_raw = read_file(ACCOUNT_FILE)
-    local acct_name, acct_id
-    if acct_raw ~= "" then
-        acct_name, acct_id = acct_raw:match("^(.+):(%d+)$")
-    end
-
     local dir    = "/data/data/" .. PKG .. "/shared_prefs"
     local target = dir .. "/RobloxSharedPreferences.xml"
     local tmp    = "/sdcard/.hcookie_tmp.xml"
 
-    -- Read existing XML via su
-    local existing = su_read('cat "' .. target .. '"')
+    -- Read existing XML via temp file (avoids io.popen TTY corruption)
+    local xml_tmp = "/sdcard/.hopper_xmlread.tmp"
+    os.execute("su -c 'cat \"" .. target .. "\"' > '" .. xml_tmp .. "' 2>/dev/null")
+    local xf = io.open(xml_tmp, "r")
+    local existing = xf and xf:read("*a") or ""
+    if xf then xf:close() end
+    os.remove(xml_tmp)
 
-    -- Build XML content — 3 cases
     local xml_content
-    local cookie_esc = cookie:gsub("%%", "%%%%")
-
     if existing ~= "" and existing:find("ROBLOSECURITY") then
-        -- Case 1: XML exists WITH .ROBLOSECURITY → replace value only
+        local cookie_safe = cookie:gsub("%%", "%%%%")
         xml_content = existing:gsub(
             '(<string%s+name="%.ROBLOSECURITY">)[^<]*(</string>)',
-            '%1' .. cookie_esc .. '%2'
+            '%1' .. cookie_safe .. '%2'
         )
-        log("Cookie XML: replaced existing ROBLOSECURITY value")
-
-    elseif existing ~= "" and existing:find("</map>") then
-        -- Case 2: XML exists WITHOUT .ROBLOSECURITY → INSERT key, keep everything else
-        local inject_lines = '    <string name=".ROBLOSECURITY">' .. cookie_esc .. '</string>\n'
-        -- Also inject auth state keys if we have account info
-        if acct_id then
-            if not existing:find('"RobloxUserId"') then
-                inject_lines = inject_lines .. '    <string name="RobloxUserId">' .. acct_id .. '</string>\n'
-            end
-        end
-        if acct_name then
-            if not existing:find('"RobloxUserName"') then
-                inject_lines = inject_lines .. '    <string name="RobloxUserName">' .. acct_name .. '</string>\n'
-            end
-        end
-        xml_content = existing:gsub("</map>", inject_lines .. "</map>")
-        log("Cookie XML: inserted into existing XML (preserved " .. #existing .. " bytes)")
-
+        log("Cookie: replace di XML existing")
     else
-        -- Case 3: No XML → write fresh with cookie + auth state
-        local entries = '    <string name=".ROBLOSECURITY">' .. cookie .. '</string>\n'
-        if acct_id then
-            entries = entries .. '    <string name="RobloxUserId">' .. acct_id .. '</string>\n'
-        end
-        if acct_name then
-            entries = entries .. '    <string name="RobloxUserName">' .. acct_name .. '</string>\n'
-        end
         xml_content = "<?xml version='1.0' encoding='utf-8' standalone='yes' ?>\n"
                    .. "<map>\n"
-                   .. entries
+                   .. '    <string name=".ROBLOSECURITY">' .. cookie .. "</string>\n"
                    .. "</map>\n"
-        log("Cookie XML: wrote fresh XML")
+        log("Cookie: tulis XML minimal (fresh)")
     end
 
-    -- Also update auth state keys in existing XML (Case 1)
-    if existing ~= "" and existing:find("ROBLOSECURITY") then
-        if acct_id then
-            if xml_content:find('"RobloxUserId"') then
-                xml_content = xml_content:gsub(
-                    '(<string%s+name="RobloxUserId">)[^<]*(</string>)',
-                    '%1' .. acct_id .. '%2'
-                )
-            elseif xml_content:find("</map>") then
-                xml_content = xml_content:gsub("</map>",
-                    '    <string name="RobloxUserId">' .. acct_id .. '</string>\n</map>')
-            end
-        end
-        if acct_name then
-            if xml_content:find('"RobloxUserName"') then
-                xml_content = xml_content:gsub(
-                    '(<string%s+name="RobloxUserName">)[^<]*(</string>)',
-                    '%1' .. acct_name .. '%2'
-                )
-            elseif xml_content:find("</map>") then
-                xml_content = xml_content:gsub("</map>",
-                    '    <string name="RobloxUserName">' .. acct_name .. '</string>\n</map>')
-            end
-        end
-    end
-
-    -- Write SharedPreferences
     local f = io.open(tmp, "w")
     if not f then log("ERR: gagal tulis cookie tmp"); return end
     f:write(xml_content)
     f:close()
 
-    su_exec("mkdir -p '" .. dir .. "'")
-    su_exec("cp '" .. tmp .. "' '" .. target .. "'")
-
-    -- Fix ownership & permissions
-    local uid_h = io.popen("su -c 'stat -c %u /data/data/" .. PKG .. "' 2>/dev/null")
-    local uid = uid_h and uid_h:read("*l") or ""
-    if uid_h then uid_h:close() end
-    uid = uid:gsub("%c",""):gsub("%s","")
-    if uid ~= "" then
-        su_exec("chown " .. uid .. ":" .. uid .. " '" .. target .. "'")
-    end
-    su_exec("chmod 660 '" .. target .. "'")
-    su_exec("restorecon '" .. target .. "'")
-    os.remove(tmp)
-    log("SharedPrefs injected (uid=" .. uid .. ")")
-
     -- ── WebView cookie store ──
     local cookie_db = "/data/data/" .. PKG .. "/app_webview/Default/Cookies"
     local sql_tmp   = "/sdcard/.hopper_wv.sql"
     local safe      = cookie:gsub("'", "''")
-
-    -- Check if DB exists
-    local db_flag = su_read('test -f "' .. cookie_db .. '" && echo Y')
-    local db_exists = db_flag:match("Y")
-
-    if db_exists then
-        -- Chromium timestamps: microseconds since 1601-01-01
-        -- chromium_us = (unix_sec + 11644473600) * 1000000
+    local sf = io.open(sql_tmp, "w")
+    if sf then
+        -- UPDATE untuk kasus already-logged-in (row sudah ada)
+        -- INSERT OR IGNORE untuk kasus fresh (row belum ada)
+        -- Schema dari cookie2.png — tanpa last_access_utc / last_update_utc
         local unix_now = os.time()
         local chrome_base = unix_now + 11644473600
         local now_us = string.format("%.0f", chrome_base * 1000000)
         local exp_us = string.format("%.0f", (chrome_base + 31536000) * 1000000)
-
-        local sf = io.open(sql_tmp, "w")
-        if sf then
-            -- Strategy: UPDATE first, then INSERT OR IGNORE as fallback
-            -- UPDATE hits existing row; INSERT OR IGNORE catches fresh installs
-            -- Schema dari cookie2.png: TIDAK ada last_access_utc / last_update_utc
-            sf:write(string.format(
-[[UPDATE cookies SET value='%s' WHERE name='.ROBLOSECURITY' AND host_key='.roblox.com';
+        sf:write(string.format(
+[[UPDATE cookies SET value='%s' WHERE name='.ROBLOSECURITY';
 INSERT OR IGNORE INTO cookies (
     creation_utc, host_key, top_frame_site_key, name, value,
     encrypted_value, path, expires_utc, is_secure, is_httponly,
@@ -306,39 +221,45 @@ INSERT OR IGNORE INTO cookies (
     1, 2, 443,
     0, 0
 );
-]], safe,
-   now_us, safe, exp_us))
-            sf:close()
-
-            -- Try both sqlite3 paths (system & termux)
-            su_exec("/data/data/com.termux/files/usr/bin/sqlite3 '" .. cookie_db .. "' < '" .. sql_tmp .. "'")
-            su_exec("sqlite3 '" .. cookie_db .. "' < '" .. sql_tmp .. "'")
-            os.remove(sql_tmp)
-            log("WebView cookie: UPDATE + INSERT OR IGNORE executed")
-        else
-            log("WARN: gagal tulis sql tmp")
-        end
+]], safe, now_us, safe, exp_us))
+        sf:close()
+        su_exec("/data/data/com.termux/files/usr/bin/sqlite3 '" .. cookie_db .. "' < '" .. sql_tmp .. "'")
+        os.remove(sql_tmp)
+        log("WebView cookie updated")
     else
-        log("WARN: WebView Cookies DB not found at " .. cookie_db)
+        log("WARN: gagal tulis sql tmp")
     end
 
-    -- ── Verify injection ──
-    local verify_xml = su_read('cat "' .. target .. '"')
-    if verify_xml:find("ROBLOSECURITY") then
-        log("VERIFY: SharedPrefs OK — ROBLOSECURITY present")
-    else
-        log("VERIFY FAIL: SharedPrefs — ROBLOSECURITY NOT found after inject!")
-    end
+    su_exec("mkdir -p '" .. dir .. "'")
+    su_exec("cp '" .. tmp .. "' '" .. target .. "'")
 
-    if db_exists then
-        local verify_db = su_read("/data/data/com.termux/files/usr/bin/sqlite3 '"
-            .. cookie_db .. "' \"SELECT COUNT(*) FROM cookies WHERE name='.ROBLOSECURITY';\"")
-        local cnt = verify_db:match("(%d+)")
-        if cnt and tonumber(cnt) > 0 then
-            log("VERIFY: WebView DB OK — " .. cnt .. " row(s)")
-        else
-            log("VERIFY FAIL: WebView DB — 0 rows for .ROBLOSECURITY")
-        end
+    -- Fix ownership via temp file (avoids io.popen TTY corruption)
+    local uid_tmp = "/sdcard/.hopper_uid.tmp"
+    os.execute("su -c 'stat -c %u /data/data/" .. PKG .. "' > '" .. uid_tmp .. "' 2>/dev/null")
+    local uid = read_file(uid_tmp)
+    os.remove(uid_tmp)
+    if uid ~= "" then
+        su_exec("chown " .. uid .. ":" .. uid .. " '" .. target .. "'")
+    end
+    su_exec("chmod 660 '" .. target .. "'")
+    su_exec("restorecon '" .. target .. "'")
+    os.remove(tmp)
+    log("Cookie injected (uid=" .. uid .. ")")
+
+    -- ── Verify ──
+    local vx = su_read('cat "' .. target .. '"')
+    if vx:find("ROBLOSECURITY") then
+        log("VERIFY: SharedPrefs OK")
+    else
+        log("VERIFY FAIL: SharedPrefs — tidak ada ROBLOSECURITY!")
+    end
+    local vc = su_read("/data/data/com.termux/files/usr/bin/sqlite3 '"
+        .. cookie_db .. "' \"SELECT COUNT(*) FROM cookies WHERE name='.ROBLOSECURITY';\" 2>/dev/null")
+    local cnt = vc:match("(%d+)")
+    if cnt and tonumber(cnt) > 0 then
+        log("VERIFY: WebView DB OK — " .. cnt .. " row(s)")
+    else
+        log("VERIFY FAIL: WebView DB — 0 rows (sqlite3 mungkin belum install?)")
     end
 end
 
