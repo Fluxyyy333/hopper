@@ -411,60 +411,64 @@ local function dump_shared_prefs()
     out("=== DUMP SHARED PREFS ===")
     out("")
 
-    local target = "/data/data/" .. PKG .. "/shared_prefs/RobloxSharedPreferences.xml"
-    local content = su_read('cat "' .. target .. '"')
-
-    if content == "" then
-        out("[!] File tidak ada atau kosong:")
-        out("    " .. target)
-    else
-        out("File: " .. target)
-        out("Size: " .. #content .. " bytes")
-        out("")
-        out("--- Content ---")
-        -- Print each line
-        for line in content:gmatch("[^\r\n]+") do
-            out(line)
-        end
-        out("--- End ---")
-    end
-
-    out("")
-
-    -- Also check WebView Cookies DB
-    local cookie_db = "/data/data/" .. PKG .. "/app_webview/Default/Cookies"
-    local db_flag = su_read('test -f "' .. cookie_db .. '" && echo Y')
-    if db_flag:match("Y") then
-        out("WebView Cookies DB: EXISTS")
-        local rows = su_read("/data/data/com.termux/files/usr/bin/sqlite3 '"
-            .. cookie_db .. "' \"SELECT name, substr(value,1,30), host_key FROM cookies LIMIT 20;\"")
-        if rows ~= "" then
-            out("")
-            out("--- Cookies rows ---")
-            for line in rows:gmatch("[^\r\n]+") do
-                out("  " .. line)
-            end
-            out("--- End ---")
-        else
-            out("  (no rows or query failed)")
-        end
-    else
-        out("WebView Cookies DB: NOT FOUND")
-    end
-
-    -- List all shared_prefs files
-    out("")
-    out("--- All SharedPrefs files ---")
     local prefs_dir = "/data/data/" .. PKG .. "/shared_prefs/"
+
+    -- List all files first
+    out("--- File list ---")
     local ls_out = su_read('ls -la "' .. prefs_dir .. '"')
     if ls_out ~= "" then
-        for line in ls_out:gmatch("[^\r\n]+") do
-            out("  " .. line)
-        end
+        for line in ls_out:gmatch("[^\r\n]+") do out("  " .. line) end
     else
         out("  (empty or not accessible)")
     end
     out("--- End ---")
+    out("")
+
+    -- Dump content of every XML file (skip huge files >8KB)
+    local files_raw = su_read('ls "' .. prefs_dir .. '" 2>/dev/null')
+    for fname in files_raw:gmatch("[^\r\n]+") do
+        fname = fname:gsub("%c",""):gsub("^%s+",""):gsub("%s+$","")
+        if fname:match("%.xml$") then
+            local fpath = prefs_dir .. fname
+            -- Check size first
+            local sz_raw = su_read('stat -c %s "' .. fpath .. '" 2>/dev/null')
+            local sz = tonumber(sz_raw:match("%d+")) or 0
+            out("=== " .. fname .. " (" .. sz .. " bytes) ===")
+            if sz == 0 then
+                out("  (kosong atau tidak bisa dibaca)")
+            elseif sz > 8192 then
+                out("  (file terlalu besar, skip)")
+            else
+                local content = su_read('cat "' .. fpath .. '"')
+                if content == "" then
+                    out("  (tidak bisa dibaca)")
+                else
+                    for line in content:gmatch("[^\r\n]+") do out(line) end
+                end
+            end
+            out("")
+        end
+    end
+
+    -- WebView Cookies DB check
+    local cookie_db = "/data/data/" .. PKG .. "/app_webview/Default/Cookies"
+    local db_flag = su_read('test -f "' .. cookie_db .. '" && echo Y')
+    if db_flag:match("Y") then
+        out("WebView Cookies DB: EXISTS")
+        -- Try both sqlite3 paths
+        local rows = su_read("/data/data/com.termux/files/usr/bin/sqlite3 '"
+            .. cookie_db .. "' \".tables\" 2>/dev/null")
+        out("  Tables: " .. (rows ~= "" and rows or "(none/error)"))
+        local rows2 = su_read("/data/data/com.termux/files/usr/bin/sqlite3 '"
+            .. cookie_db .. "' \"SELECT name,host_key,substr(value,1,20) FROM cookies LIMIT 10;\" 2>/dev/null")
+        if rows2 ~= "" then
+            for line in rows2:gmatch("[^\r\n]+") do out("  " .. line) end
+        else
+            out("  (no rows)")
+        end
+    else
+        out("WebView Cookies DB: NOT FOUND")
+    end
 
     out("")
     ask("Enter untuk kembali")
