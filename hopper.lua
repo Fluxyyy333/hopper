@@ -228,9 +228,18 @@ INSERT OR IGNORE INTO cookies (
 );
 ]], safe, now_us, safe, exp_us))
         sf:close()
-        su_exec("/data/data/com.termux/files/usr/bin/sqlite3 '" .. cookie_db .. "' < '" .. sql_tmp .. "'")
+        -- Jalankan sqlite3 dan tangkap error ke log
+        local sq_err_tmp = "/sdcard/.hopper_sq_err.tmp"
+        os.execute("su -c '/data/data/com.termux/files/usr/bin/sqlite3 \""
+            .. cookie_db .. "\" < \"" .. sql_tmp .. "\"' > '"
+            .. sq_err_tmp .. "' 2>&1")
+        local sq_err = read_file(sq_err_tmp)
+        os.remove(sq_err_tmp)
+        if sq_err ~= "" then
+            log("sqlite3 error: " .. sq_err)
+        end
         os.remove(sql_tmp)
-        log("WebView cookie updated")
+        log("WebView cookie: sqlite3 executed")
     else
         log("WARN: gagal tulis sql tmp")
     end
