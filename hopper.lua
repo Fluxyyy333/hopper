@@ -1,4 +1,4 @@
--- Simple PS Hopper v1.4.4
+-- Simple PS Hopper v1.5
 -- Patch 1: Cache-only clear before each launch (fixes crash on server switch)
 -- Patch 2: Fixed bash/tty hang -> background sh reader (fixes P2 crash)
 -- Patch 3: Crash watchdog no longer resets hop timer (fixes infinite dead-link loop)
@@ -12,11 +12,15 @@
 --         - WebView: INSERT OR IGNORE setelah UPDATE (handle row belum ada)
 --         - Inject userId/userName ke SharedPrefs untuk auth state
 --         - Tambah menu diagnostik (dump SharedPrefs)
--- v1.4.4: Revert inject_cookie ke base v1.4.4AdoptMeAgent yang clean
+-- v1.5: Revert inject_cookie ke base v1.4.3 AdoptMeAgent yang clean
 --         - Hapus over-engineering (RobloxUserId inject, 3-case XML)
 --         - Temp file untuk XML read + UID (fix TTY corruption)
 --         - WebView schema fix: hapus last_access_utc/last_update_utc
 --         - INSERT OR IGNORE dengan schema benar untuk fresh install
+-- v1.5:   Cold-start flow untuk fresh Redfinger
+--         - Deteksi otomatis apakah WebView DB sudah ada
+--         - Kalau belum: launch app sekali (inisialisasi DB), stop, inject, launch PS
+--         - Dynamic schema detection untuk WebView INSERT (PRAGMA table_info)
 -- ============================================
 
 local HOPPER_LOG   = "/sdcard/hopper_log.txt"
@@ -477,7 +481,7 @@ local function show_status(cur_ps, ps_total, crash_count,
                             runtime_m, hop_elapsed_m, status_str)
     cls()
     out("========================")
-    out("  HOPPER MONITOR v1.4.4")
+    out("  HOPPER MONITOR v1.5")
     out("========================")
     out("")
     out("Pkg    : " .. PKG)
@@ -538,10 +542,26 @@ local function run_hopper()
     local hop_time    = os.time()
     local last_display = 0
 
-    -- Force-stop dulu sebelum inject supaya WebView DB tidak terkunci
-    out("[*] Stopping app before inject...")
-    su_exec("am force-stop " .. PKG)
-    sleep(2)
+    -- Cold-start check: kalau WebView DB belum ada, launch sekali dulu
+    -- supaya Roblox menginisialisasi DB dan SharedPrefs nya
+    local cookie_db_path = "/data/data/" .. PKG .. "/app_webview/Default/Cookies"
+    local db_ready = su_read('test -f "' .. cookie_db_path .. '" && echo Y'):match("Y")
+    if not db_ready then
+        out("[*] Fresh install detected — cold-starting app to initialize DB...")
+        log("Fresh install: cold-start untuk inisialisasi WebView DB")
+        su_exec("monkey -p " .. PKG .. " -c android.intent.category.LAUNCHER 1")
+        sleep(8)
+        out("[*] Stopping after init...")
+        su_exec("am force-stop " .. PKG)
+        sleep(2)
+        out("[+] DB initialized.")
+        log("Cold-start selesai, lanjut inject")
+    else
+        -- Sudah ada DB, force-stop saja supaya tidak locked saat inject
+        out("[*] Stopping app before inject...")
+        su_exec("am force-stop " .. PKG)
+        sleep(2)
+    end
 
     out("")
     inject_all_verbose()
@@ -801,7 +821,7 @@ local function main()
 
     while true do
         cls()
-        out("=== SIMPLE HOPPER v1.4.4===")
+        out("=== SIMPLE HOPPER v1.5===")
         out("")
         local cookie = read_file(COOKIE_FILE)
         local ps     = load_ps()
