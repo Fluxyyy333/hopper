@@ -290,24 +290,24 @@ local function inject_cookie()
         if sf then
             -- Strategy: UPDATE first, then INSERT OR IGNORE as fallback
             -- UPDATE hits existing row; INSERT OR IGNORE catches fresh installs
+            -- Schema dari cookie2.png: TIDAK ada last_access_utc / last_update_utc
             sf:write(string.format(
-[[UPDATE cookies SET value='%s', last_access_utc=%s, last_update_utc=%s
-WHERE name='.ROBLOSECURITY';
+[[UPDATE cookies SET value='%s' WHERE name='.ROBLOSECURITY' AND host_key='.roblox.com';
 INSERT OR IGNORE INTO cookies (
     creation_utc, host_key, top_frame_site_key, name, value,
     encrypted_value, path, expires_utc, is_secure, is_httponly,
-    samesite, last_access_utc, has_expires, is_persistent,
-    priority, source_scheme, source_port, last_update_utc,
+    samesite, has_expires, is_persistent,
+    priority, source_scheme, source_port,
     source_type, has_cross_site_ancestor
 ) VALUES (
     %s, '.roblox.com', '', '.ROBLOSECURITY', '%s',
     X'', '/', %s, 1, 1,
-    -1, %s, 1, 1,
-    1, 2, 443, %s,
+    -1, 1, 1,
+    1, 2, 443,
     0, 0
 );
-]], safe, now_us, now_us,
-   now_us, safe, exp_us, now_us, now_us))
+]], safe,
+   now_us, safe, exp_us))
             sf:close()
 
             -- Try both sqlite3 paths (system & termux)
