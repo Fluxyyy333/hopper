@@ -1,9 +1,11 @@
--- Simple PS Hopper v1.7 STANDALONE
--- Base: v1.4.2 (fully working, zero dependencies, no backend)
--- v1.7: Pure standalone — no web backend, no ngrok, no API polling
---       Just local menu + auto hopping. Works offline forever.
--- Config: Package, cookie, PS links, hop interval (all local files)
--- Menu: Setup config, then auto-start hopping. Ctrl+C to stop.
+-- Simple PS Hopper v1.4.2
+-- Patch 1: Cache-only clear before each launch (fixes crash on server switch)
+-- Patch 2: Fixed bash/tty hang -> background sh reader (fixes P2 crash)
+-- Patch 3: Crash watchdog no longer resets hop timer (fixes infinite dead-link loop)
+-- Patch 4: Cookie inject: preserve existing XML keys + restorecon SELinux fix
+-- Patch 5: Update WebView cookie store via sqlite3 full path (replace value, not delete)
+-- v1.4.2: UI/QOL polish — \r\n fix, cookie inject+account info, hop persist,
+--         Ctrl+C stop, PS resume, progress feedback
 -- ============================================
 
 local HOPPER_LOG   = "/sdcard/hopper_log.txt"
@@ -268,7 +270,7 @@ local function show_status(cur_ps, ps_total, crash_count,
                             runtime_m, hop_elapsed_m, status_str)
     cls()
     out("========================")
-    out("  HOPPER MONITOR v1.7 ")
+    out("  HOPPER MONITOR v1.4.2 ")
     out("========================")
     out("")
     out("Pkg    : " .. PKG)
