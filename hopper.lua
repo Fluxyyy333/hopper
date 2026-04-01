@@ -1,5 +1,8 @@
 -- Simple PS Hopper v1.6
--- v1.6 Changes:
+-- v1.7 Changes:
+--   [FIX] safe_num() — prevents 'tonumber base out of range' crash from
+--         garbled curl|sed pipelines or corrupt file reads
+--   [FIX] All numeric file reads use safe_num() instead of raw tonumber()
 --   [1] Static UI saat running — tidak ada cls/redraw, tidak ada ghost input
 --   [2] Endpoint PS link — 1 PS khusus untuk age-up/fusion centralized
 --   [3] Switch Mode — toggle regular <-> age-up mode dari main menu
@@ -78,6 +81,17 @@ local function file_exists(path)
     local f = io.open(path, "r")
     if f then f:close(); return true end
     return false
+end
+
+-- [v1.7 FIX] Safe numeric conversion — never crashes on garbage input.
+-- Uses tostring() first so corrupt file reads or nil values never reach
+-- the tonumber(str, base) code path that caused "base out of range".
+local function safe_num(val, default)
+    local n = tonumber(tostring(val or ""))
+    if n and n == n then  -- NaN guard
+        return n
+    end
+    return default or 0
 end
 
 local function save_file(path, content)
@@ -450,7 +464,7 @@ local function run_hopper()
     else
         local ps_list = load_ps()
         local ptr = 1
-        local saved_ptr = tonumber(read_file(PTR_FILE))
+        local saved_ptr = safe_num(read_file(PTR_FILE))
         if saved_ptr and saved_ptr >= 1 and saved_ptr <= #ps_list then
             ptr = saved_ptr
             log("Resumed from PS " .. ptr)
@@ -862,7 +876,7 @@ end
 local function main()
     PKG = read_file(PKG_FILE)
 
-    local hop_saved = tonumber(read_file(HOP_FILE))
+    local hop_saved = safe_num(read_file(HOP_FILE))
     if hop_saved and hop_saved >= 0 then HOP_MIN = hop_saved end
 
     local mode_saved = read_file(MODE_FILE)
