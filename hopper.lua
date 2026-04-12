@@ -51,6 +51,14 @@ local function sleep(s)
     if s and s > 0 then os.execute("sleep " .. tostring(s)) end
 end
 
+-- [v1.8] Sleep yang bisa di-interrupt: ketik 0 + Enter → tulis STOP_FILE.
+-- Pakai read -t (foreground, bukan background) → tidak ada SIGTTIN/ghost type.
+local function tty_sleep(s)
+    os.execute("sh -c 'read -t " .. tostring(s)
+        .. " _HL </dev/tty 2>/dev/null"
+        .. "; case \"$_HL\" in 0) touch " .. STOP_FILE .. ";; esac' 2>/dev/null")
+end
+
 local function su_exec(cmd)
     os.execute("su -c '" .. cmd:gsub("'","'\\''") .. "' >/dev/null 2>&1")
 end
@@ -438,6 +446,7 @@ local function run_hopper()
 
     out("[*] Injecting...")
     inject_all_verbose()
+    fix_tty()  -- restore TTY setelah inject_cookie/sqlite3 korupsi terminal
     out("")
 
     -- ── STATIC BANNER ──────────────────────────────────
@@ -471,12 +480,6 @@ local function run_hopper()
     end
     -- ────────────────────────────────────────────────────
 
-    -- [v1.8] Background tty reader: ketik 0 + Enter → stop hopper
-    local TTY_PID_FILE = "/sdcard/.hopper_tty_pid"
-    os.execute("sh -c '(while IFS= read -r L </dev/tty; do"
-        .. " [ \"$L\" = \"0\" ] && touch " .. STOP_FILE .. " && break;"
-        .. " done) & echo $! > " .. TTY_PID_FILE .. "' 2>/dev/null")
-
     log("=== Hopper Started === Mode: " .. MODE)
 
     -- ── AGE UP MODE LOOP ──────────────────────────────
@@ -487,7 +490,7 @@ local function run_hopper()
 
         local ok, err = pcall(function()
             while true do
-                sleep(10)
+                tty_sleep(10)
                 if file_exists(STOP_FILE) then
                     log("Stop file detected")
                     return
@@ -523,7 +526,7 @@ local function run_hopper()
 
         local ok, err = pcall(function()
             while true do
-                sleep(5)
+                tty_sleep(5)
                 if file_exists(STOP_FILE) then
                     log("Stop file detected")
                     return
@@ -555,15 +558,6 @@ local function run_hopper()
         save_file(PTR_FILE, tostring(cur_ps))
         log("Saved PS pointer: " .. cur_ps)
     end
-
-    -- [v1.8] Cleanup background tty reader
-    local TTY_PID_FILE = "/sdcard/.hopper_tty_pid"
-    local tty_pid = read_file(TTY_PID_FILE)
-    if tty_pid ~= "" then
-        local pid = tty_pid:match("%d+")
-        if pid then os.execute("kill " .. pid .. " 2>/dev/null") end
-    end
-    os.remove(TTY_PID_FILE)
 
     os.remove(STOP_FILE)
     log("=== Hopper Stopped ===")
