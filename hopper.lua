@@ -1,4 +1,11 @@
--- Simple PS Hopper v1.7
+-- Simple PS Hopper v1.8
+-- v1.8 Changes:
+--   [1] Input 0 + Enter untuk stop & kembali ke main menu saat hopper running
+--       (background tty reader → tulis STOP_FILE, tanpa Ctrl+C)
+--   [2] Static banner diperbarui ke v1.8 di semua tampilan
+--   [3] Fresh device cold-start pakai am start -n (via pm resolve-activity)
+--       bukan monkey → Termux tidak ikut ke-close oleh random events
+--       Fallback ke monkey hanya jika pm resolve-activity gagal
 -- v1.7 Changes:
 --   [FIX] safe_num() — prevents 'tonumber base out of range' crash from
 --         garbled curl|sed pipelines or corrupt file reads
@@ -341,6 +348,26 @@ local function inject_all_verbose()
     out("[+] All injected.")
 end
 
+-- [v1.8] Launch app untuk cold-start pakai am start -n (bukan monkey).
+-- monkey mengirim random touch events yang bisa mengenai Termux.
+-- am start -n hanya membuka activity tertentu, tidak ada side effect.
+local function cold_start_app()
+    local act = su_read("pm resolve-activity --brief -a android.intent.action.MAIN"
+        .. " -c android.intent.category.LAUNCHER " .. PKG .. " 2>/dev/null | tail -1")
+    act = act:gsub("[%c%s]", "")
+    if act ~= "" and act:find("/", 1, true) then
+        su_exec("am start --user 0 -n '" .. act .. "'")
+        log("Cold-start via am start -n: " .. act)
+    else
+        -- Fallback: monkey terbatas hanya launcher event
+        su_exec("monkey -p " .. PKG
+            .. " -c android.intent.category.LAUNCHER"
+            .. " --throttle 500 --ignore-crashes --ignore-timeouts"
+            .. " --ignore-security-exceptions 1")
+        log("Cold-start via monkey (fallback, pm resolve-activity gagal)")
+    end
+end
+
 local function launch(ps_link, label)
     log("Launching: " .. (label or ps_link:sub(1,40)))
     su_exec("am force-stop " .. PKG)
@@ -391,9 +418,9 @@ local function run_hopper()
     local cookie_db_path = "/data/data/" .. PKG .. "/app_webview/Default/Cookies"
     local db_ready = su_read('test -f "' .. cookie_db_path .. '" && echo Y'):match("Y")
     if not db_ready then
-        out("[*] Fresh install — cold-starting app...")
-        log("Fresh install: cold-start untuk inisialisasi WebView DB")
-        su_exec("monkey -p " .. PKG .. " -c android.intent.category.LAUNCHER 1")
+        out("[*] Fresh device — cold-starting Roblox...")
+        log("Fresh device: cold-start untuk inisialisasi WebView DB")
+        cold_start_app()
         sleep(8)
         su_exec("am force-stop " .. PKG)
         sleep(2)
@@ -411,20 +438,20 @@ local function run_hopper()
     cls()
     if is_ageup then
         out("╔══════════════════════════════╗")
-        out("║   HOPPER v1.6 — AGE UP MODE  ║")
+        out("║   HOPPER v1.8 — AGE UP MODE  ║")
         out("╚══════════════════════════════╝")
         out("")
         out("Mode   : AGE UP (endpoint PS)")
         out("Pkg    : " .. PKG)
         out("Status : RUNNING")
         out("")
-        out("Tekan Ctrl+C untuk stop.")
+        out("Ketik 0 + Enter untuk stop & kembali ke menu.")
         out("Log    : " .. HOPPER_LOG)
         out("══════════════════════════════")
     else
         local ps_list = load_ps()
         out("╔══════════════════════════════╗")
-        out("║   HOPPER v1.6 — NORMAL MODE  ║")
+        out("║   HOPPER v1.8 — NORMAL MODE  ║")
         out("╚══════════════════════════════╝")
         out("")
         out("Mode   : NORMAL (" .. #ps_list .. " PS)")
@@ -432,11 +459,17 @@ local function run_hopper()
         out("Hop    : " .. (HOP_MIN == 0 and "OFF" or HOP_MIN .. "m"))
         out("Status : RUNNING")
         out("")
-        out("Tekan Ctrl+C untuk stop.")
+        out("Ketik 0 + Enter untuk stop & kembali ke menu.")
         out("Log    : " .. HOPPER_LOG)
         out("══════════════════════════════")
     end
     -- ────────────────────────────────────────────────────
+
+    -- [v1.8] Background tty reader: ketik 0 + Enter → stop hopper
+    local TTY_PID_FILE = "/sdcard/.hopper_tty_pid"
+    os.execute("sh -c '(while IFS= read -r L </dev/tty; do"
+        .. " [ \"$L\" = \"0\" ] && touch " .. STOP_FILE .. " && break;"
+        .. " done) & echo $! > " .. TTY_PID_FILE .. "' 2>/dev/null")
 
     log("=== Hopper Started === Mode: " .. MODE)
 
@@ -517,13 +550,22 @@ local function run_hopper()
         log("Saved PS pointer: " .. cur_ps)
     end
 
+    -- [v1.8] Cleanup background tty reader
+    local TTY_PID_FILE = "/sdcard/.hopper_tty_pid"
+    local tty_pid = read_file(TTY_PID_FILE)
+    if tty_pid ~= "" then
+        local pid = tty_pid:match("%d+")
+        if pid then os.execute("kill " .. pid .. " 2>/dev/null") end
+    end
+    os.remove(TTY_PID_FILE)
+
     os.remove(STOP_FILE)
     log("=== Hopper Stopped ===")
 
     cls()
-    out("========================")
-    out("   HOPPER STOPPED")
-    out("========================")
+    out("╔══════════════════════════════╗")
+    out("║      HOPPER v1.8 — STOPPED   ║")
+    out("╚══════════════════════════════╝")
     out("")
     out("Cek log: " .. HOPPER_LOG)
     out("")
@@ -888,7 +930,7 @@ local function main()
     while true do
         cls()
         out("╔══════════════════════════════╗")
-        out("║    SIMPLE HOPPER  v1.6       ║")
+        out("║    SIMPLE HOPPER  v1.8       ║")
         out("╚══════════════════════════════╝")
         out("")
 
