@@ -29,7 +29,7 @@ local ENDPOINT_FILE   = "/sdcard/.hopper_endpoint"   -- [NEW] endpoint PS link
 local MODE_FILE       = "/sdcard/.hopper_mode"        -- [NEW] "normal" | "ageup"
 
 local DELTA_KEY_DIR  = "/storage/emulated/0/Delta/Internals/Cache/"
-local DELTA_KEY_PATH = DELTA_KEY_DIR .. "license.txt"
+local DELTA_KEY_PATH = DELTA_KEY_DIR .. "license"
 local DELTA_KEY_VAL  = "KEY_d1da50257e7edf4c344e746a942662c8"
 local DELTA_AE_DIR   = "/storage/emulated/0/Delta/Autoexecute/"
 local DELTA_AE_PATH  = DELTA_AE_DIR .. "Accept.lua"
