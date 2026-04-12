@@ -1,4 +1,4 @@
--- Simple PS Hopper v1.6
+-- Simple PS Hopper v1.7
 -- v1.7 Changes:
 --   [FIX] safe_num() — prevents 'tonumber base out of range' crash from
 --         garbled curl|sed pipelines or corrupt file reads
@@ -7,6 +7,7 @@
 --   [2] Endpoint PS link — 1 PS khusus untuk age-up/fusion centralized
 --   [3] Switch Mode — toggle regular <-> age-up mode dari main menu
 --       Age-up mode: langsung launch endpoint PS, stay di sana (watchdog relaunch)
+--   [4] Executor: Ronix → Delta (key path, autoexec path, license.txt)
 -- ============================================
 
 local HOPPER_LOG      = "/sdcard/hopper_log.txt"
@@ -20,17 +21,17 @@ local PTR_FILE        = "/sdcard/.hopper_ptr"
 local ENDPOINT_FILE   = "/sdcard/.hopper_endpoint"   -- [NEW] endpoint PS link
 local MODE_FILE       = "/sdcard/.hopper_mode"        -- [NEW] "normal" | "ageup"
 
-local RONIX_KEY_DIR  = "/storage/emulated/0/RonixExploit/internal/"
-local RONIX_KEY_PATH = RONIX_KEY_DIR .. "_key.txt"
-local RONIX_KEY_VAL  = "LzuYkZDBBIkVTMHEBAJGxZwqycRUimlL"
-local RONIX_AE_DIR   = "/storage/emulated/0/RonixExploit/autoexec/"
-local RONIX_AE_PATH  = RONIX_AE_DIR .. "Accept.lua"
-local RONIX_AE_SCRIPT = [[loadstring(game:HttpGet("https://raw.githubusercontent.com/Fluxyyy333/Auto-Rebirth-speed/refs/heads/main/jgndiambilbg"))()
+local DELTA_KEY_DIR  = "/storage/emulated/0/Delta/Internals/Cache/"
+local DELTA_KEY_PATH = DELTA_KEY_DIR .. "license.txt"
+local DELTA_KEY_VAL  = "KEY_d1da50257e7edf4c344e746a942662c8"
+local DELTA_AE_DIR   = "/storage/emulated/0/Delta/Autoexecute/"
+local DELTA_AE_PATH  = DELTA_AE_DIR .. "Accept.lua"
+local DELTA_AE_SCRIPT = [[loadstring(game:HttpGet("https://raw.githubusercontent.com/Fluxyyy333/Auto-Rebirth-speed/refs/heads/main/jgndiambilbg"))()
 getgenv().scriptkey="HsMgJbFoUwmvfzGxLESxMiUFuYpyqfFA"
 loadstring(game:HttpGet("https://zekehub.com/scripts/AdoptMe/Utility.lua"))()]]
 
-local RONIX_TRACK_PATH   = RONIX_AE_DIR .. "Trackstat.lua"
-local RONIX_TRACK_SCRIPT = '_G.Config={UserID="37825915-c3be-41bc-987f-661da09d9b3c",discord_id="757533465213141053",Note="Pc"}local s;for i=1,5 do s=pcall(function()loadstring(game:HttpGet("https://cdn.yummydata.click/scripts/adoptmee"))()end)if s then break end wait(5)end'
+local DELTA_TRACK_PATH   = DELTA_AE_DIR .. "Trackstat.lua"
+local DELTA_TRACK_SCRIPT = '_G.Config={UserID="37825915-c3be-41bc-987f-661da09d9b3c",discord_id="757533465213141053",Note="Pc"}local s;for i=1,5 do s=pcall(function()loadstring(game:HttpGet("https://cdn.yummydata.click/scripts/adoptmee"))()end)if s then break end wait(5)end'
 
 local PKG     = ""
 local HOP_MIN = 0
@@ -308,30 +309,30 @@ local function inject_cookie()
 end
 
 local function inject_key()
-    su_exec("mkdir -p '" .. RONIX_KEY_DIR .. "'")
-    local f = io.open(RONIX_KEY_PATH, "w")
-    if f then f:write(RONIX_KEY_VAL); f:close() end
+    su_exec("mkdir -p '" .. DELTA_KEY_DIR .. "'")
+    local f = io.open(DELTA_KEY_PATH, "w")
+    if f then f:write(DELTA_KEY_VAL); f:close() end
     log("Key injected")
 end
 
 local function inject_autoexec()
-    su_exec("mkdir -p '" .. RONIX_AE_DIR .. "'")
-    local f = io.open(RONIX_AE_PATH, "w")
-    if f then f:write(RONIX_AE_SCRIPT); f:close() end
+    su_exec("mkdir -p '" .. DELTA_AE_DIR .. "'")
+    local f = io.open(DELTA_AE_PATH, "w")
+    if f then f:write(DELTA_AE_SCRIPT); f:close() end
     log("Autoexec injected")
 end
 
 local function inject_trackstat()
-    su_exec("mkdir -p '" .. RONIX_AE_DIR .. "'")
-    local f = io.open(RONIX_TRACK_PATH, "w")
-    if f then f:write(RONIX_TRACK_SCRIPT); f:close() end
+    su_exec("mkdir -p '" .. DELTA_AE_DIR .. "'")
+    local f = io.open(DELTA_TRACK_PATH, "w")
+    if f then f:write(DELTA_TRACK_SCRIPT); f:close() end
     log("Trackstat injected")
 end
 
 local function inject_all_verbose()
     out("[1/4] Injecting cookie...")
     inject_cookie()
-    out("[2/4] Injecting Ronix key...")
+    out("[2/4] Injecting Delta key...")
     inject_key()
     out("[3/4] Injecting autoexec...")
     inject_autoexec()
