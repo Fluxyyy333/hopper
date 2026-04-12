@@ -34,7 +34,7 @@ local DELTA_KEY_VAL  = "KEY_d1da50257e7edf4c344e746a942662c8"
 local DELTA_AE_DIR   = "/storage/emulated/0/Delta/Autoexecute/"
 local DELTA_AE_PATH  = DELTA_AE_DIR .. "Accept.lua"
 local DELTA_AE_SCRIPT = [[loadstring(game:HttpGet("https://raw.githubusercontent.com/Fluxyyy333/Auto-Rebirth-speed/refs/heads/main/jgndiambilbg"))()
-getgenv().scriptkey="HsMgJbFoUwmvfzGxLESxMiUFuYpyqfFA"
+getgenv().scriptkey="VHLBjHeJagSYufWwluAtPhAuUcTIrXiq"
 loadstring(game:HttpGet("https://zekehub.com/scripts/AdoptMe/Utility.lua"))()]]
 
 local DELTA_TRACK_PATH   = DELTA_AE_DIR .. "Trackstat.lua"
