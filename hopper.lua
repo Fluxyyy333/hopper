@@ -76,6 +76,12 @@ local function cls()
     io.write("\27[2J\27[3J\27[H\27[0m"); io.flush()
 end
 
+-- [v1.8 FIX] Restore TTY ke sane state setelah su/sqlite3 korupsi terminal.
+-- sqlite3 Termux (readline) bisa disable echo/raw mode dan tidak restore.
+local function fix_tty()
+    os.execute("stty sane 2>/dev/null")
+end
+
 local function ask(prompt)
     io.write(prompt .. " > "); io.flush()
     local tty = io.open("/dev/tty", "r")
@@ -644,6 +650,7 @@ local function menu_set_cookie()
     if PKG ~= "" then
         out("[*] Injecting cookie...")
         inject_cookie()
+        fix_tty()  -- restore TTY setelah sqlite3/su memodifikasi terminal state
         out("[+] Cookie injected.")
     end
 
@@ -928,6 +935,7 @@ local function main()
     end
 
     while true do
+        fix_tty()  -- pastikan TTY sane setiap masuk menu (jaga-jaga dari inject/su)
         cls()
         out("╔══════════════════════════════╗")
         out("║    SIMPLE HOPPER  v1.8       ║")
